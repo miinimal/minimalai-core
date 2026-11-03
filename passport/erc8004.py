@@ -14,7 +14,7 @@ Two halves:
   writes (anchor container, key in /wallets, never in the gateway): register the world identity, give feedback for accepted
          receipts queued by the gateway (`erc8004_feedback` table). Signing: eth-account; ABI: eth-abi (imported lazily).
 Env: ERC8004_CHAIN (84532), ERC8004_RPC (chain default), ERC8004_KEY (path of the hex private key; created 0600 on first write).
-CLI (anchor): python erc8004.py address | status | register [--dry] | feedback [--dry] | summary <agentId>
+CLI (anchor): python erc8004.py address | status | register [--dry] | feedback [--dry] | summary <agentId> | proof (end to end on testnet)
 Author: Aleksandr Shcherbakov (@miinimal) - MINIMALCULT. License: MIT (open core).
 """
 import hashlib
@@ -292,6 +292,79 @@ def send_feedback(c, acct, chain=None, _rpc=None, dry=False, limit=5):
     return out
 
 
+def proof(acct, gw=None, admin_token=None, chain=None, _rpc=None, log=print):
+    """The whole R1 proof on the public testnet, from the anchor: a throwaway agent key funded by the project registers its own
+    identity whose registration file (a data: URI) names a fresh passport; the passport is linked through the gateway (tokenURI
+    check on chain); a poster hires that agent for one task and accepts; the queued feedback is written to the Reputation
+    Registry by the project key. Prints every address and transaction. Needs ~0.001 ETH on the project address and the admin
+    token (one credit of test GRAM for the poster). Idempotent per run: a new agent each time."""
+    import base64, sqlite3
+    from eth_account import Account
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+    from cryptography.hazmat.primitives import serialization as S
+    gw = gw or ("http://" + os.environ.get("GW_HOST", "127.0.0.1") + ":8090")
+    admin_token = admin_token or os.environ.get("ADMIN_TOKEN", "")
+    chain = chain or CHAIN
+    r = _rpc or rpc
+    H = lambda key: {"Authorization": f"Bearer {key}"}
+    # 1. a passport for the agent (public API), its API key bound to it
+    worker = httpx.post(f"{gw}/v1/signup", json={"name": "erc8004-proof"}, timeout=30).json()
+    if "api_key" not in worker:
+        raise RuntimeError(f"signup refused: {worker}")
+    pk = Ed25519PrivateKey.generate(); pub = pk.public_key().public_bytes(S.Encoding.Raw, S.PublicFormat.Raw).hex()
+    ch = httpx.post(f"{gw}/v1/passport/challenge", json={"pubkey": pub}, timeout=30).json()
+    pp = httpx.post(f"{gw}/v1/passport", json={"pubkey": pub, "nonce": ch["nonce"], "sig": base64.b64encode(pk.sign(ch["sign"].encode())).decode(), "name": "erc8004-proof"}, timeout=30).json()
+    httpx.post(f"{gw}/v1/passport/{pp['id']}/bind", json={"sig": base64.b64encode(pk.sign(f"minimalai-bind:{pp['id']}:{worker['agent_id']}".encode())).decode()}, headers=H(worker["api_key"]), timeout=30).raise_for_status()
+    log(f"PASSPORT {pp['id']} agent {worker['agent_id']} number {worker.get('number')}")
+    # 2. the agent's own EVM key, funded by the project with 0.0004 ETH, registers its identity (agentURI = data: file naming the passport)
+    agent = Account.from_key("0x" + secrets.token_hex(32))
+    fund = send_eth(acct, agent.address, 400_000_000_000_000, chain, r)
+    log(f"AGENT_KEY {agent.address} funded tx {fund.get('tx')} status {fund.get('status')}")
+    reg = {"type": REGISTRATION_TYPE, "name": "erc8004-proof agent", "description": "a MINIMAL AI worker proving the passport link",
+           "services": [{"name": "minimalai", "endpoint": f"{BASE}/v1/passport/{pp['id']}"}], "active": True}
+    uri = "data:application/json;base64," + base64.b64encode(json.dumps(reg).encode()).decode()
+    res = send(registries(chain)["identity"], encode_call(*SIG["register"][:2], [uri]), agent, chain, r)
+    aid = None
+    for lg in res.get("logs", []):
+        if lg.get("topics") and lg["topics"][0].lower() == registered_topic() and len(lg["topics"]) > 1:
+            aid = int(lg["topics"][1], 16)
+    log(f"AGENT_IDENTITY agentId {aid} tx {res.get('tx')} status {res.get('status')}")
+    if aid is None:
+        raise RuntimeError("registration produced no Registered event")
+    # 3. the gateway links passport <- identity after reading tokenURI on chain
+    link = httpx.post(f"{gw}/v1/passport/{pp['id']}/erc8004", json={"agent_id": aid, "chain": chain}, timeout=60)
+    log(f"LINK {link.status_code} {link.text[:160]}")
+    link.raise_for_status()
+    # 4. one job: a poster hires the agent and accepts; the gateway queues the feedback
+    poster = httpx.post(f"{gw}/v1/signup", json={"name": "erc8004-poster"}, timeout=30).json()
+    httpx.post(f"{gw}/admin/credit", json={"api_key": poster["api_key"], "nano": 300_000_000}, headers=H(admin_token), timeout=30).raise_for_status()
+    t = httpx.post(f"{gw}/v1/tasks", json={"title": "ERC-8004 proof: say which chain this is", "instructions": "Answer with the chain name and id of the test network used for this proof.", "price_nano": 100_000_000}, headers=H(poster["api_key"]), timeout=30).json()
+    httpx.post(f"{gw}/v1/work/{t['id']}/take", headers=H(worker["api_key"]), timeout=30).raise_for_status()
+    httpx.post(f"{gw}/v1/work/{t['id']}/submit", json={"submission": f"Base Sepolia, eip155:{chain}"}, headers=H(worker["api_key"]), timeout=30).raise_for_status()
+    acc = httpx.post(f"{gw}/v1/tasks/{t['id']}/accept", headers=H(poster["api_key"]), timeout=30).json()
+    log(f"TASK {t['id']} {acc.get('status')} receipt {BASE}/v1/receipts/task/{t['id']}")
+    # 5. the project key writes the queued feedback
+    c = sqlite3.connect(DB_PATH, timeout=10); c.row_factory = sqlite3.Row
+    out = send_feedback(c, acct, chain, r); c.commit(); c.close()
+    log(f"FEEDBACK {json.dumps(out, default=str)[:300]}")
+    log(f"SUMMARY {json.dumps(summary(aid, [acct.address], chain=chain, _rpc=r))} · {registries(chain)['explorer']}/address/{registries(chain)['reputation']}")
+    return {"passport": pp["id"], "agent_id": aid, "agent_address": agent.address, "task": t["id"], "feedback": out}
+
+
+def send_eth(acct, to, wei, chain=None, _rpc=None):
+    r = _rpc or rpc; chain = chain or CHAIN
+    nonce = int(r("eth_getTransactionCount", [acct.address, "pending"]), 16)
+    base_fee = int(r("eth_getBlockByNumber", ["latest", False])["baseFeePerGas"], 16)
+    tx = {"chainId": chain, "nonce": nonce, "to": to, "value": int(wei), "data": "0x", "gas": 21000, "maxFeePerGas": base_fee * 2 + 1_000_000, "maxPriorityFeePerGas": 1_000_000, "type": 2}
+    h = r("eth_sendRawTransaction", ["0x" + acct.sign_transaction(tx).raw_transaction.hex()])
+    for _ in range(60):
+        rec = r("eth_getTransactionReceipt", [h])
+        if rec:
+            return {"tx": h, "status": int(rec["status"], 16)}
+        time.sleep(2)
+    return {"tx": h, "status": None}
+
+
 def status(_rpc=None):
     addr = project_address()
     d = {"chain": CHAIN, "network": registries()["name"], "rpc": RPC, "identity_registry": registries()["identity"],
@@ -318,6 +391,8 @@ def main(argv):
     acct = load_key(create=True); publish_address()
     if cmd == "register":
         print(json.dumps(register_world(acct, dry=dry), indent=1, default=str)); return 0
+    if cmd == "proof":
+        print(json.dumps(proof(acct), indent=1, default=str)); return 0
     if cmd == "feedback":
         c = sqlite3.connect(DB_PATH); c.row_factory = sqlite3.Row
         print(json.dumps(send_feedback(c, acct, dry=dry), indent=1, default=str)); c.commit(); return 0
