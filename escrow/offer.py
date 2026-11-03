@@ -182,6 +182,9 @@ def chain_state(address, fetch=None):
     import httpx
     fetch = fetch or FETCH or (lambda url, body: httpx.post(url, json=body, timeout=20).json())
     d = fetch(TONCENTER[NETWORK] + "/runGetMethod", {"address": address, "method": "get_escrow", "stack": []})
+    if "exit_code" not in d and not d.get("stack"):   # toncenter throttled or hiccuped (no verdict at all): one retry
+        time.sleep(1.5)
+        d = fetch(TONCENTER[NETWORK] + "/runGetMethod", {"address": address, "method": "get_escrow", "stack": []})
     if d.get("exit_code", 0) != 0 or not d.get("stack"):
         return None
     st = d["stack"]
