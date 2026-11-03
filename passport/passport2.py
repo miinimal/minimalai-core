@@ -169,8 +169,8 @@ def setup(app, db, client_ip, moltbook_post=None):
     @app.post("/v1/passport/{id_}/wallet/verify")
     async def verify_wallet(id_: str, request: Request):
         """Prove the passport's declared wallet (B6b): send any amount (>= 0.001 GRAM) from that wallet to the project's
-        GRAM-402 address with the comment `passport:<id>`; then call this. The transfer is a payment for the check (it is
-        kept as credit on a key bound to the payer, like any GRAM-402 overpayment); the proof is the on-chain sender."""
+        GRAM-402 address with the comment `passport:<id>`; then call this. The transfer is the price of the check (project
+        revenue, not credited back; start value 2026-11-03); the proof is the on-chain sender."""
         import pay402
         id_ = id_.lower()[:32]
         with db() as c:
