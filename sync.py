@@ -20,6 +20,8 @@ MANIFEST = [
     ("docs/protocol/RECEIPTS-v1.md", "spec/RECEIPTS-v1.md"),
     ("docs/protocol/WORK-ORDERS-v1.md", "spec/WORK-ORDERS-v1.md"),
     ("docs/protocol/CUSTODY.md", "spec/CUSTODY.md"),
+    ("docs/protocol/ERC-8004.md", "spec/ERC-8004.md"),
+    ("gateway/erc8004.py", "passport/erc8004.py"),
     ("gateway/receipts.py", "receipts/issuer.py"),
     ("sdk/python/minimalai_receipt.py", "receipts/verify.py"),
     ("sdk/python/gram402.py", "sdk/python/gram402.py"),

@@ -65,8 +65,21 @@ def record(row, number=None):
                "wallet_verified": bool(row["wallet_verified"]) if "wallet_verified" in row.keys() else False, "status": row["status"], "settled_at": row["settled_at"],
                "city": {"name": row["city_name"] + ".minimalcult.ton", "resolves": bool(row["city_registered"]) if "city_registered" in row.keys() else False,
                         "note": "GET /v1/city/<name>: registered on chain by the mayor once the City Hall is live"},
-               "moltbook": json.loads(row["moltbook"]) if row["moltbook"] else None}
+               "moltbook": json.loads(row["moltbook"]) if row["moltbook"] else None,
+               "erc8004": _erc8004_view(row["erc8004"]) if "erc8004" in row.keys() and row["erc8004"] else None}
     return receipts.sign(payload)
+
+
+def _erc8004_view(link):
+    """'eip155:<chain>:<agentId>' -> what a reader needs to look the identity up (R1)."""
+    try:
+        import erc8004
+        _, chain, aid = link.split(":")
+        reg = erc8004.CHAINS.get(int(chain), {})
+        return {"agent_id": int(aid), "chain": int(chain), "identity_registry": reg.get("identity"), "reputation_registry": reg.get("reputation"),
+                "agent_registry": f"eip155:{chain}:{reg.get('identity')}", "reputation": f"{erc8004.BASE}/v1/erc8004/{aid}?chain={chain}"}
+    except Exception:  # noqa: BLE001
+        return {"raw": link}
 
 
 def number_of(c, row):
@@ -365,6 +378,40 @@ def setup(app, db, client_ip, moltbook_post=None):
             c.execute("UPDATE passports SET key_hash=? WHERE id=?", (key["key_hash"], id_))
             row = c.execute("SELECT * FROM passports WHERE id=?", (id_,)).fetchone()
             return {"passport": id_, "agent_id": aid, "number": number_of(c, row), "bound": True}
+
+    @app.post("/v1/passport/{id_}/erc8004")
+    async def link_erc8004(id_: str, request: Request):
+        """R1: link an ERC-8004 identity to this passport. Body {"agent_id": N, "chain": 84532}. Proof: the identity's tokenURI
+        points at a registration file that names this passport (a service endpoint .../v1/passport/<id>) — only the token's
+        owner can set that URI. After the link, every accepted job becomes feedback in the Reputation Registry."""
+        import erc8004
+        b = await request.json()
+        id_ = id_.lower()[:32]
+        try:
+            aid = int(b.get("agent_id")); chain = int(b.get("chain") or erc8004.CHAIN)
+        except (TypeError, ValueError):
+            raise HTTPException(400, "agent_id (integer) is required; chain optional")
+        if chain not in erc8004.CHAINS:
+            raise HTTPException(400, f"unknown chain; known: {sorted(erc8004.CHAINS)}")
+        with db() as c:
+            if not c.execute("SELECT 1 FROM passports WHERE id=?", (id_,)).fetchone():
+                raise HTTPException(404, "no such passport")
+        try:
+            proof = erc8004.verify_link(aid, id_, chain, _rpc=getattr(app.state, "erc8004_rpc", None), _fetch=getattr(app.state, "erc8004_fetch", None))
+        except ValueError as e:
+            raise HTTPException(409, str(e))
+        except Exception as e:  # noqa: BLE001
+            raise HTTPException(502, f"could not read the registry: {str(e)[:120]}")
+        link = f"eip155:{chain}:{aid}"
+        with db() as c:
+            if "erc8004" not in [r[1] for r in c.execute("PRAGMA table_info(passports)")]:
+                c.execute("ALTER TABLE passports ADD COLUMN erc8004 TEXT")
+            other = c.execute("SELECT id FROM passports WHERE erc8004=? AND id!=?", (link, id_)).fetchone()
+            if other:
+                raise HTTPException(409, f"this identity is already linked to passport {other[0]}")
+            c.execute("UPDATE passports SET erc8004=? WHERE id=?", (link, id_))
+        return {"passport": id_, "linked": link, "owner": proof["owner"], "uri": proof["uri"],
+                "feedback": "every accepted job is written to the Reputation Registry by the project address; see /v1/erc8004"}
 
     @app.get("/v1/passport/{id_}")
     def get_passport(id_: str):

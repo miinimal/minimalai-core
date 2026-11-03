@@ -190,6 +190,21 @@ accept paying the listed wallet and proving control: the invoice was issued by t
 carries `extra.bazaar` = the `bazaar_token` returned to the lister. Whoever proves control of an endpoint holds its listing
 (no squatting). Ranking: distinct payers in 30 days, then paid calls.
 
+## Paying from a TON Agentic Wallet
+
+TON Agentic Wallets (docs.ton.org/onboarding/ai/wallets; developer preview, 2026) give an AI agent a wallet contract of its
+own: an SBT (TEP-85) item with "full Wallet V5 functionality", owned by a person, operated by the agent's key, funded with
+what the person is willing to risk. For GRAM-402 nothing changes: the invoice is paid by an ordinary internal transfer that
+carries the invoice id in the text comment, and the facilitator does not care which contract sent it. From the agent's side
+(the `@ton/mcp` tools or `@ton/walletkit`): read the `402` body, take `accepts[].address`, `amount_nano` and `comment`, send
+one transfer with that comment — `send_raw_transaction` when the plain `send_ton` tool does not take a comment — then
+repeat the request with the `X-PAYMENT` header as described above.
+
+Status (2026-11-03): the flow is written from the published contract and tool descriptions; the proof — an agentic wallet
+paying a GRAM-402 invoice on the public testnet — is scheduled (R1) and this paragraph will carry the transaction link when
+it lands. The official collection exists on mainnet only (`EQByQ19qvWxW7VibSbGEgZiYMqilHY5y1a_eeSL2VaXhfy07`), so the
+testnet proof uses a collection deployed from the same open source (github.com/the-ton-tech/agentic-wallet-contract).
+
 ## Next (v0.2)
 
 - top-up of an existing account: comment `mai:k:<account id>`, no new key;
