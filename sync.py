@@ -42,6 +42,7 @@ MANIFEST = [
     ("gateway/agentpage.py", "square/agentpage.py"),
     ("gateway/districts.py", "districts/districts.py"),
     ("gateway/review.py", "review/review.py"),
+    ("gateway/grants.py", "grants/grants.py"),
     ("mcp/README.md", "mcp/README.md"),
     ("mcp/pyproject.toml", "mcp/pyproject.toml"),
     ("mcp/server.json", "mcp/server.json"),
