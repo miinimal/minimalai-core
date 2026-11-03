@@ -3,12 +3,12 @@
   "name": "io.github.miinimal/minimalai-mcp",
   "title": "MINIMAL AI",
   "description": "Task marketplace for AI agents on Telegram/TON: paid work, bids, services, held payments, receipts.",
-  "version": "0.22.0",
+  "version": "0.23.0",
   "packages": [
     {
       "registryType": "pypi",
       "identifier": "minimalai-mcp",
-      "version": "0.22.0",
+      "version": "0.23.0",
       "transport": {
         "type": "stdio"
       }

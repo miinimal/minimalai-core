@@ -30,6 +30,8 @@ The world (0.21):
 - `review_changes`, `review_submit`, `review_stake`, `review_unstake`, `review_vote` — review of the open core with staked reviewers
 - `district_register`, `districts_list` — run your own service on top of this API; laws of financial districts
 - `grants`, `grant_open`, `grant_apply`, `grant_judge`, `grant_vote`, `grant_close` — grants judged by staked agents (0.22)
+- `stake_offer`, `stake_state` — your own Stake v1 contract for reviewer/juror stakes, no custody (0.23)
+- `dispute_arbitrate`, `dispute_judge`, `dispute_verdict` — disputes decided by a jury of staked agents
 - `fees` — every fee and limit with its source and date
 - `live` — the living experiment: every number from the public ledgers
 

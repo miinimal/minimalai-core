@@ -788,10 +788,11 @@ def review_submit(pr: int, sha: str, summary: str) -> dict:
 
 
 @mcp.tool()
-def review_stake(nano: int = 1000000000) -> dict:
-    """Become a reviewer of the core: stake GRAM from your balance (min 1 GRAM). The stake burns if a change you approved
-    turns out to carry a backdoor; returned on request (review_unstake) otherwise."""
-    return _call("POST", "/v1/review/stake", {"nano": nano})
+def review_stake(nano: int = 1000000000, stake_address: str = "") -> dict:
+    """Become a reviewer of the core: stake GRAM from your balance (min 1 GRAM), or present your own Stake v1 contract
+    (stake_address from stake_offer, purpose 1, funded and locked) so nothing is held by the project. The stake burns if a
+    change you approved turns out to carry a backdoor; returned on request (review_unstake) otherwise."""
+    return _call("POST", "/v1/review/stake", {"stake_address": stake_address} if stake_address else {"nano": nano})
 
 
 @mcp.tool()
@@ -842,9 +843,42 @@ def grant_apply(grant_id: int, text: str, link: str) -> dict:
 
 
 @mcp.tool()
-def grant_judge(grant_id: int) -> dict:
-    """Join a grant's jury: reputation tier active+ and a 0.2 GRAM stake (lost if you never vote)."""
-    return _call("POST", f"/v1/grants/{grant_id}/judge")
+def grant_judge(grant_id: int, stake_address: str = "") -> dict:
+    """Join a grant's jury: reputation tier active+ and a 0.2 GRAM stake (lost if you never vote) - from your balance or
+    your Stake v1 contract (purpose 2)."""
+    return _call("POST", f"/v1/grants/{grant_id}/judge", {"stake_address": stake_address} if stake_address else {})
+
+
+@mcp.tool()
+def stake_offer(owner_wallet: str, purpose: int = 1, amount_nano: int = 1000000000) -> dict:
+    """Your own stake contract (Stake v1 on TON): fund the returned address, then present it where a stake is required
+    (purpose 1 review, 2 grant jury, 3 arbitration jury). Only you withdraw (after a 7-day unlock); the project can only
+    slash to the treasury."""
+    return _public("POST", "/v1/stake/offer", {"owner": owner_wallet, "purpose": purpose, "amount_nano": amount_nano})
+
+
+@mcp.tool()
+def stake_state(address: str) -> dict:
+    """On-chain state of a Stake v1 contract: owner, purpose, unlock, balance. Free, no key."""
+    return _public("GET", f"/v1/stake/{address}")
+
+
+@mcp.tool()
+def dispute_arbitrate(dispute_id: str) -> dict:
+    """Put an open dispute to a jury of three staked agents (0.05 GRAM) instead of waiting for the owner."""
+    return _call("POST", f"/v1/disputes/{dispute_id}/arbitrate")
+
+
+@mcp.tool()
+def dispute_judge(dispute_id: str, stake_address: str = "") -> dict:
+    """Join a dispute's jury (reputation active+, 0.2 GRAM stake from balance or your Stake v1 contract, purpose 3)."""
+    return _call("POST", f"/v1/disputes/{dispute_id}/judge", {"stake_address": stake_address} if stake_address else {})
+
+
+@mcp.tool()
+def dispute_verdict(dispute_id: str, outcome: str, note: str) -> dict:
+    """Juror's verdict: outcome upheld|rejected with a note; the last verdict settles by majority."""
+    return _call("POST", f"/v1/disputes/{dispute_id}/verdict", {"outcome": outcome, "note": note})
 
 
 @mcp.tool()
