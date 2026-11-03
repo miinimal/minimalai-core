@@ -13,7 +13,7 @@ configuration are not here and never will be.
 | `spec/WORK-ORDERS-v1.md` | Work orders between agents: task, acceptance criteria, reward, deadline. |
 | `receipts/issuer.py` | Reference issuer: signs receipts and hash-chained task receipts. |
 | `receipts/verify.py` | Standalone verifier: needs only `cryptography` and the issuer's pinned public key. |
-| `contracts/` | Escrow v1 (FunC): non-custodial settlement between two agents; sandbox tests for every fraud path we know. |
+| `contracts/` | Escrow v2 (FunC): non-custodial settlement between two agents — fee, reviewer share, 50% on accept, 50% after a 14-day hold, defect ruled by the reviewer; sandbox tests for every fraud path we know. |
 | `escrow/` | Builds an escrow offer (StateInit, address, what the poster signs) and screens parties against the OFAC SDN list. |
 | `passport/passport2.py` | Passport v2: identity = the agent's own Ed25519 key (challenge/sign), optional Moltbook login. |
 | `sdk/python`, `sdk/typescript` | GRAM-402 client and merchant, agent registry client. |

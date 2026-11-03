@@ -1,12 +1,18 @@
-"""Non-custodial escrow between agents (master prompt 4.2, block B2).
+"""Non-custodial escrow between agents (master prompt 4.2 and 3.4, blocks B2 and B6 "the Circle").
 
 The gateway only *describes* an escrow: it builds the StateInit of contract Escrow v1 (oracle-contract/contracts/
-escrow.fc) for given poster, worker, deadline and task, screens both parties against the sanctions list and returns
+escrow.fc, v2) for given poster, worker, optional reviewer, deadline and task, screens both parties against the sanctions list and returns
 what the poster's own wallet must sign. The project holds no key of the contract and is never a party: funds go
 poster -> escrow -> worker (and the fee -> treasury). The hot wallet does not appear in any of these messages.
 
 Fee: ESCROW_FEE_BPS, default 1500 = 15%, the same test rate as the task market (gateway/market.py MARKET_FEE_PCT,
-2026-11-03); the contract caps any rate at 20%. Treasury: PROFIT_WALLET (minimalcult.ton), the project's own revenue.
+2026-11-03); reviewer ESCROW_REVIEWER_BPS default 1500 = 15% and holdback 50% for ESCROW_HOLD_S default 14 days
+(master prompt 3.4 start values, 2026-11-03, A/B later); the contract caps each rate at 20%.
+Treasury: PROFIT_WALLET (minimalcult.ton), the project's own revenue.
+
+After the poster accepts on chain (state HOLD), POST /v1/escrow/receipt issues a signed, hash-chained settlement
+receipt (RECEIPTS v1 style) that binds the escrow address, the notarized submission hash and the worker's passport;
+GET /v1/passport/{id}/settlements lists them. The gateway only reads the chain; it never signs a transfer.
 Author: Aleksandr Shcherbakov (@miinimal) - MINIMALCULT.
 """
 import base64
@@ -22,11 +28,16 @@ import sanctions
 
 CODE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "escrow_code.b64")
 FEE_BPS = int(os.environ.get("ESCROW_FEE_BPS", "1500"))
+REVIEWER_BPS = int(os.environ.get("ESCROW_REVIEWER_BPS", "1500"))
+HOLD_S = int(os.environ.get("ESCROW_HOLD_S", str(14 * 86400)))
+TONCENTER = {"testnet": "https://testnet.toncenter.com/api/v3", "mainnet": "https://toncenter.com/api/v3"}
 TREASURY = os.environ.get("PROFIT_WALLET", "UQBR7mOMjcAAIiyyArjJtLNy3qT6bIATvQMu1zIsaudS3jS5")
 NETWORK = os.environ.get("ESCROW_NETWORK", "testnet")      # mainnet only after B2 review on testnet
 MIN_NANO = int(os.environ.get("ESCROW_MIN_NANO", "100000000"))   # 0.1 GRAM: below this the 0.01 reserve dominates
 MAX_DAYS = 90
-OP = {"release": 0x52454c53, "decline": 0x4445434c, "refund": 0x52464e44}
+OP = {"accept": 0x41435054, "claim": 0x434c414d, "defect": 0x44464354, "release": 0x52454c53, "decline": 0x4445434c,
+      "refund": 0x52464e44}
+STATES = {0: "open", 1: "hold", 2: "defect"}
 
 
 def code():
@@ -44,10 +55,13 @@ def same(a, b):
         return False
 
 
-def state_init(poster, worker, deadline_ts, task_id, fee_bps=FEE_BPS, treasury=TREASURY):
-    terms = Builder().store_address(Address(treasury)).store_uint(fee_bps, 16).store_uint(deadline_ts, 32) \
-        .store_uint(task_id, 64).end_cell()
-    data = Builder().store_address(Address(poster)).store_address(Address(worker)).store_ref(terms).end_cell()
+def state_init(poster, worker, deadline_ts, task_id, fee_bps=FEE_BPS, treasury=TREASURY, reviewer=None,
+               reviewer_bps=REVIEWER_BPS, hold_s=HOLD_S):
+    terms = Builder().store_address(Address(treasury)).store_uint(fee_bps, 16) \
+        .store_address(Address(reviewer) if reviewer else None).store_uint(reviewer_bps, 16) \
+        .store_uint(deadline_ts, 32).store_uint(task_id, 64).store_uint(hold_s, 32).end_cell()
+    data = Builder().store_address(Address(poster)).store_address(Address(worker)).store_uint(0, 2).store_uint(0, 32) \
+        .store_uint(0, 32).store_ref(terms).end_cell()
     return StateInit(code=code(), data=data)
 
 
@@ -63,40 +77,50 @@ def b64(cell):
     return base64.urlsafe_b64encode(cell.to_boc()).decode()
 
 
-def offer(poster, worker, amount_nano, deadline_ts, task_id, now=None):
+def offer(poster, worker, amount_nano, deadline_ts, task_id, now=None, reviewer=None):
     now = int(now or time.time())
+    reviewer = reviewer or None
     try:
         Address(poster), Address(worker)
+        if reviewer:
+            Address(reviewer)
     except Exception:  # noqa: BLE001
         raise HTTPException(400, "invalid TON address")
     if same(poster, worker):
         raise HTTPException(400, "poster and worker must differ")
     hw = hot_wallet()
-    if hw and (same(poster, hw) or same(worker, hw)):
+    if reviewer and (same(reviewer, poster) or same(reviewer, worker)):
+        raise HTTPException(400, "the reviewer must be a third party")
+    if hw and any(same(x, hw) for x in (poster, worker, reviewer) if x):
         raise HTTPException(400, "the project wallet is never a party to an agent escrow")
     if amount_nano < MIN_NANO:
         raise HTTPException(400, f"amount below {MIN_NANO} nano")
     if not now < deadline_ts <= now + MAX_DAYS * 86400:
         raise HTTPException(400, f"deadline must be in the next {MAX_DAYS} days")
     try:
-        sanctions.check(poster, worker)
+        sanctions.check(*[x for x in (poster, worker, reviewer) if x])
     except sanctions.Blocked as e:
         raise HTTPException(403, str(e))
-    si = state_init(poster, worker, deadline_ts, task_id)
+    si = state_init(poster, worker, deadline_ts, task_id, reviewer=reviewer)
     addr = address_of(si)
     friendly = addr.to_str(is_user_friendly=True, is_bounceable=True, is_test_only=NETWORK == "testnet")
     init = b64(si.serialize())
     q = lambda amount, **kw: urllib.parse.urlencode({"amount": amount, **kw})
     return {
-        "network": NETWORK, "contract": "minimalai-escrow-v1", "address": friendly,
+        "network": NETWORK, "contract": "minimalai-escrow-v2", "address": friendly,
         "address_raw": addr.to_str(is_user_friendly=False),
         "poster": poster, "worker": worker, "amount_nano": amount_nano, "deadline_ts": deadline_ts, "task_id": task_id,
-        "fee_bps": FEE_BPS, "treasury": TREASURY, "custody": "none: the project holds no key of this contract",
+        "fee_bps": FEE_BPS, "reviewer": reviewer, "reviewer_bps": REVIEWER_BPS if reviewer else 0, "hold_s": HOLD_S,
+        "split": "on accept: fee to treasury, reviewer share, 50% of the rest to worker; the other 50% after hold_s "
+                 "unless the poster flags a defect (the reviewer rules; no ruling in 30 days = split equally)",
+        "treasury": TREASURY, "custody": "none: the project holds no key of this contract",
         "state_init_boc": init,
         "fund": {"from": "poster", "amount_nano": amount_nano, "deeplink": f"ton://transfer/{friendly}?{q(amount_nano, init=init)}"},
         "actions": {name: {"from": who, "amount_nano": 50000000, "body_boc": b64(op_body(name)),
                            "deeplink": f"ton://transfer/{friendly}?{q(50000000, bin=b64(op_body(name)))}"}
-                    for name, who in (("release", "poster"), ("decline", "worker"), ("refund", "poster after deadline"))},
+                    for name, who in (("accept", "poster"), ("claim", "anyone after hold"), ("defect", "poster within hold"),
+                                      ("release", "poster, or reviewer on a defect"), ("decline", "worker"),
+                                      ("refund", "poster after deadline, or reviewer on a defect"))},
         "source": "https://github.com/miinimal/minimalai-core (contracts/escrow.fc)",
     }
 
@@ -107,9 +131,82 @@ class Offer(BaseModel):
     amount_nano: int
     deadline_ts: int
     task_id: int = 0
+    reviewer: str = ""
 
 
-def setup(app):
+def _slice_addr(item):
+    from pytoniq_core import Cell as C
+    return C.one_from_boc(base64.b64decode(item["value"])).begin_parse().load_address()
+
+
+FETCH = None   # tests replace the chain reader here
+
+
+def chain_state(address, fetch=None):
+    """Read get_escrow from toncenter v3 (runGetMethod). fetch: injectable (tests)."""
+    import httpx
+    fetch = fetch or FETCH or (lambda url, body: httpx.post(url, json=body, timeout=20).json())
+    d = fetch(TONCENTER[NETWORK] + "/runGetMethod", {"address": address, "method": "get_escrow", "stack": []})
+    if d.get("exit_code", 0) != 0 or not d.get("stack"):
+        return None
+    st = d["stack"]
+    num = lambda i: int(st[i]["value"], 16)
+    return {"poster": _slice_addr(st[0]), "worker": _slice_addr(st[1]), "state": STATES.get(num(2), "?"),
+            "accepted_at": num(3), "task_id": num(10)}
+
+
+def settle_message(address, submission_sha256):
+    return f"minimalai-settle:{Address(address).to_str(is_user_friendly=False)}:{submission_sha256}".encode()
+
+
+def settlement(c, address, submission_sha256, passport_id, sig_b64, fetch=None):
+    """The worker proves the passport is theirs (Ed25519 sig by the passport key) and that its declared wallet is the
+    escrow's worker on chain. Limit: the wallet is declared, not proven by ton_proof yet (next step)."""
+    import receipts
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+    p = c.execute("SELECT pubkey, wallet FROM passports WHERE id=?", (passport_id,)).fetchone()
+    if not p:
+        raise HTTPException(404, "no such passport")
+    try:
+        Ed25519PublicKey.from_public_bytes(bytes.fromhex(p["pubkey"])).verify(
+            base64.b64decode(sig_b64), settle_message(address, submission_sha256))
+    except Exception:  # noqa: BLE001
+        raise HTTPException(401, "sig: Ed25519 by the passport key over minimalai-settle:<escrow raw>:<sha256>")
+    st = chain_state(address, fetch)
+    if not st:
+        raise HTTPException(404, "no active escrow at this address")
+    if st["state"] == "open":
+        raise HTTPException(409, "not accepted yet: the poster sends ACPT first")
+    if not p["wallet"] or not same(p["wallet"], st["worker"].to_str(is_user_friendly=False)):
+        raise HTTPException(403, "this passport's wallet is not the escrow's worker")
+    c.execute("CREATE TABLE IF NOT EXISTS escrow_receipts(seq INTEGER PRIMARY KEY AUTOINCREMENT, address TEXT UNIQUE, "
+              "passport_id TEXT, sha256 TEXT, record TEXT)")
+    raw = Address(address).to_str(is_user_friendly=False)
+    old = c.execute("SELECT record FROM escrow_receipts WHERE address=?", (raw,)).fetchone()
+    if old:
+        import json
+        return json.loads(old[0])
+    prev = c.execute("SELECT sha256 FROM escrow_receipts ORDER BY seq DESC LIMIT 1").fetchone()
+    rec = receipts.sign({"v": 1, "kind": "escrow_settlement", "issuer": "MINIMALAI", "ts": int(time.time()),
+                         "network": NETWORK, "escrow": raw, "task_id": st["task_id"], "accepted_at": st["accepted_at"],
+                         "worker_wallet": st["worker"].to_str(is_user_friendly=False),
+                         "poster_wallet": st["poster"].to_str(is_user_friendly=False),
+                         "worker_passport": passport_id, "submission_sha256": submission_sha256,
+                         "prev_sha256": prev[0] if prev else None})
+    import json
+    c.execute("INSERT INTO escrow_receipts(address, passport_id, sha256, record) VALUES(?,?,?,?)",
+              (raw, passport_id, receipts.sha256(rec), json.dumps(rec)))
+    return rec
+
+
+class Settle(BaseModel):
+    escrow: str
+    submission_sha256: str
+    worker_passport: str
+    sig: str
+
+
+def setup(app, db=None):
     if hot_wallet() and same(TREASURY, hot_wallet()):
         raise RuntimeError("treasury must not be the hot wallet")
 
@@ -117,7 +214,28 @@ def setup(app):
     def escrow_offer(o: Offer):
         """Non-custodial escrow for paying another agent: returns the contract address and what the poster signs.
         The project never receives or holds these funds; only the fee goes to the treasury on release."""
-        return offer(o.poster, o.worker, o.amount_nano, o.deadline_ts, o.task_id)
+        return offer(o.poster, o.worker, o.amount_nano, o.deadline_ts, o.task_id, reviewer=o.reviewer)
+
+    if db is None:
+        return
+
+    @app.post("/v1/escrow/receipt")
+    def escrow_receipt(b: Settle):
+        """After the poster accepted on chain: signed settlement receipt for the worker's passport (read-only check)."""
+        if len(b.submission_sha256) != 64:
+            raise HTTPException(400, "submission_sha256: 64 hex (notarize the work first: POST /v1/notary)")
+        with db() as c:
+            return settlement(c, b.escrow, b.submission_sha256.lower(), b.worker_passport.lower(), b.sig)
+
+    @app.get("/v1/passport/{id_}/settlements")
+    def settlements(id_: str):
+        import json
+        with db() as c:
+            try:
+                rows = c.execute("SELECT record FROM escrow_receipts WHERE passport_id=? ORDER BY seq", (id_.lower(),)).fetchall()
+            except Exception:  # noqa: BLE001  table not created yet
+                rows = []
+        return {"passport": id_, "count": len(rows), "settlements": [json.loads(r[0]) for r in rows]}
 
     @app.get("/v1/sanctions/status")
     def sanctions_status():

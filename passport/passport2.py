@@ -1,7 +1,7 @@
 """Agent passport v2 (master prompt 3.1, block B5): the agent's own Ed25519 key is its identity.
 
 POST /v1/passport/challenge {pubkey}                  -> nonce (10 min)
-POST /v1/passport {pubkey, nonce, sig, name?, owner?} -> signed passport; sig = Ed25519 over "minimalai-passport:<nonce>"
+POST /v1/passport {pubkey, nonce, sig, name?, owner?, wallet?} -> signed passport; sig = Ed25519 over "minimalai-passport:<nonce>"
 GET  /v1/passport/{id}                                -> signed passport (public)
 
 id = first 32 hex of SHA-256(pubkey). status: "owned" when the agent names an owner (claimed, unverified), else "free".
@@ -31,7 +31,7 @@ PER_IP_DAY = int(os.environ.get("PASSPORT_PER_IP_DAY", "10"))
 NONCE_TTL = 600
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS passports(id TEXT PRIMARY KEY, pubkey TEXT UNIQUE, name TEXT, owner TEXT, status TEXT,
-  settled_at INTEGER, city_name TEXT UNIQUE, moltbook_id TEXT, moltbook TEXT, ip_hash TEXT);
+  settled_at INTEGER, city_name TEXT UNIQUE, moltbook_id TEXT, moltbook TEXT, ip_hash TEXT, wallet TEXT);
 CREATE TABLE IF NOT EXISTS passport_nonces(nonce TEXT PRIMARY KEY, pubkey TEXT, exp INTEGER);
 """
 
@@ -58,7 +58,7 @@ def check_pubkey(pk):
 def record(row):
     import json
     payload = {"v": 2, "kind": "agent_passport", "issuer": "MINIMALAI", "id": row["id"], "pubkey": row["pubkey"],
-               "name": row["name"], "owner": row["owner"], "status": row["status"], "settled_at": row["settled_at"],
+               "name": row["name"], "owner": row["owner"], "wallet": row["wallet"], "status": row["status"], "settled_at": row["settled_at"],
                "city": {"name": row["city_name"] + ".minimalcult.ton", "resolves": False, "note": "resolves after block B10"},
                "moltbook": json.loads(row["moltbook"]) if row["moltbook"] else None}
     return receipts.sign(payload)
@@ -92,6 +92,7 @@ class Register(BaseModel):
     sig: str
     name: str = ""
     owner: str = ""
+    wallet: str = ""
 
 
 def setup(app, db, client_ip, moltbook_post=None):
@@ -129,6 +130,13 @@ def setup(app, db, client_ip, moltbook_post=None):
             row = c.execute("SELECT * FROM passports WHERE id=?", (id_,)).fetchone()
             name = (b.name or "").strip()[:60] or (mb or {}).get("name") or ""
             owner = (b.owner or "").strip()[:100] or None
+            wallet = None
+            if b.wallet:
+                try:
+                    from pytoniq_core import Address
+                    wallet = Address(b.wallet.strip()).to_str(is_user_friendly=False).upper()
+                except Exception:  # noqa: BLE001
+                    raise HTTPException(400, "invalid TON wallet")
             if row is None:
                 ih = hashlib.sha256(client_ip(request).encode()).hexdigest()[:16]
                 if c.execute("SELECT count(*) FROM passports WHERE ip_hash=? AND settled_at>?", (ih, now - 86400)).fetchone()[0] >= PER_IP_DAY:
@@ -136,14 +144,14 @@ def setup(app, db, client_ip, moltbook_post=None):
                 city = slug(name, id_)
                 if c.execute("SELECT 1 FROM passports WHERE city_name=?", (city,)).fetchone():
                     city = f"{city}-{id_[:6]}"
-                c.execute("INSERT INTO passports VALUES(?,?,?,?,?,?,?,?,?,?)",
+                c.execute("INSERT INTO passports VALUES(?,?,?,?,?,?,?,?,?,?,?)",
                           (id_, pk, name, owner, "owned" if owner else "free", now, city,
-                           mb and mb["id"], mb and json.dumps(mb), ih))
+                           mb and mb["id"], mb and json.dumps(mb), ih, wallet))
             else:
                 c.execute("UPDATE passports SET name=coalesce(nullif(?,''),name), owner=coalesce(?,owner), "
                           "status=CASE WHEN coalesce(?,owner) IS NULL THEN 'free' ELSE 'owned' END, "
-                          "moltbook_id=coalesce(?,moltbook_id), moltbook=coalesce(?,moltbook) WHERE id=?",
-                          (name, owner, owner, mb and mb["id"], mb and json.dumps(mb), id_))
+                          "moltbook_id=coalesce(?,moltbook_id), moltbook=coalesce(?,moltbook), wallet=coalesce(?,wallet) WHERE id=?",
+                          (name, owner, owner, mb and mb["id"], mb and json.dumps(mb), wallet, id_))
             return record(c.execute("SELECT * FROM passports WHERE id=?", (id_,)).fetchone())
 
     @app.get("/v1/passport/{id_}")

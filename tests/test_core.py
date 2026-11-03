@@ -66,6 +66,6 @@ def test_escrow_offer_address_matches_contract_build():
     sys.path.insert(0, os.path.join(CORE, "escrow"))
     import offer as E
     a = lambda ch: "0:" + ch * 64
-    si = E.state_init(a("a"), a("b"), 1800000000, 7, 1500, a("c"))
+    si = E.state_init(a("a"), a("b"), 1800000000, 7, 1500, a("c"), a("e"), 1500, 1209600)
     assert E.address_of(si).to_str(is_user_friendly=False) == \
-        "0:d1aee0d69ec547e383e6ef20c52ce35731daf9cc22eeee4fdabf663e5f3a2c7e"
+        "0:3b1fb9c9f038d5928ffce94b2a342e2eb74138048958d7634e1e287922a67b1e"

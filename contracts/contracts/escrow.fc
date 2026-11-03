@@ -1,19 +1,30 @@
-;; MINIMAL AI Escrow v1: non-custodial settlement between two agents for one task.
+;; MINIMAL AI Escrow v2: non-custodial settlement between two agents for one task ("the Circle", block B6).
 ;;
-;; No project key exists in this contract. Funds move only on a message from the poster or the worker:
-;;   poster  RELS -> fee (fee_bps of the escrowed amount) to treasury, the rest to worker; contract self-destructs
-;;   worker  DECL -> everything back to poster (worker declines); contract self-destructs
-;;   poster  RFND -> everything back to poster, only after deadline; contract self-destructs
-;;   poster  plain transfer (empty body / op 0) while open -> top-up
-;; Anyone else, or any other op, is rejected (exit code > 0, message bounces back to the sender).
+;; No project key exists in this contract. Funds move only on messages from the poster or the worker, or by time:
+;;   state 0 OPEN      poster ACPT -> fee to treasury, reviewer share to reviewer, 50% of the rest to worker -> HOLD
+;;                     worker DECL -> everything back to poster (closes)
+;;                     poster RFND after deadline -> everything back to poster (closes)
+;;   state 1 HOLD      anyone CLAM after accepted_at + hold_s -> the second 50% to worker (closes)
+;;                     poster DFCT before accepted_at + hold_s -> DEFECT
+;;                     poster RELS -> the second 50% to worker now (closes)
+;;   state 2 DEFECT    poster RELS -> to worker (defect fixed); worker DECL -> to poster (defect accepted)
+;;                     reviewer RELS -> to worker; reviewer RFND -> to poster (the reviewer's ruling)
+;;                     anyone CLAM after defect_at + 30 days -> remainder split equally poster/worker (no ruling)
+;;   poster plain transfer (empty body / op 0) in OPEN -> top-up
+;; Anyone else, or any other op/state, is rejected (exit code > 0, message bounces).
 ;;
-;; Storage: poster:MsgAddress worker:MsgAddress ^[treasury:MsgAddress fee_bps:uint16 deadline:uint32 task_id:uint64]
+;; Storage: poster:MsgAddress worker:MsgAddress state:uint2 accepted_at:uint32 defect_at:uint32
+;;          ^[treasury:MsgAddress fee_bps:uint16 reviewer:MsgAddress (addr_none = no reviewer) reviewer_bps:uint16
+;;            deadline:uint32 task_id:uint64 hold_s:uint32]
 ;; The treasury receives only the fee (project revenue); it never holds the escrowed amount.
 
 #include "stdlib.fc";
 
 int equal_slices(slice a, slice b) asm "SDEQ";
 
+const op::accept = 0x41435054;   ;; "ACPT"
+const op::claim = 0x434c414d;    ;; "CLAM"
+const op::defect = 0x44464354;   ;; "DFCT"
 const op::release = 0x52454c53;  ;; "RELS"
 const op::decline = 0x4445434c;  ;; "DECL"
 const op::refund = 0x52464e44;   ;; "RFND"
@@ -23,57 +34,131 @@ const err::not_worker = 402;
 const err::too_early = 403;
 const err::bad_op = 404;
 const err::bad_fee = 405;
+const err::bad_state = 406;
+const err::too_late = 407;
 
-const MAX_FEE_BPS = 2000;        ;; hard cap 20% in code; the actual rate is set per escrow
+const MAX_BPS = 2000;            ;; hard cap 20% for the fee and 20% for the reviewer, in code
 const RESERVE = 10000000;        ;; 0.01 TON kept for fees of the outgoing messages
+const DEFECT_TIMEOUT = 2592000;  ;; 30 days
 
-(slice, slice, slice, int, int, int) load_data() inline {
+global slice poster;
+global slice worker;
+global int state;
+global int accepted_at;
+global int defect_at;
+global cell terms;
+
+() load_data() impure inline {
     slice ds = get_data().begin_parse();
-    slice poster = ds~load_msg_addr();
-    slice worker = ds~load_msg_addr();
-    slice p = ds~load_ref().begin_parse();
-    return (poster, worker, p~load_msg_addr(), p~load_uint(16), p~load_uint(32), p~load_uint(64));
+    poster = ds~load_msg_addr();
+    worker = ds~load_msg_addr();
+    state = ds~load_uint(2);
+    accepted_at = ds~load_uint(32);
+    defect_at = ds~load_uint(32);
+    terms = ds~load_ref();
 }
 
-() send_all(slice to, int amount, int mode) impure inline {
+() save_data() impure inline {
+    set_data(begin_cell().store_slice(poster).store_slice(worker).store_uint(state, 2).store_uint(accepted_at, 32)
+        .store_uint(defect_at, 32).store_ref(terms).end_cell());
+}
+
+(slice, int, slice, int, int, int, int) load_terms() inline {
+    slice t = terms.begin_parse();
+    return (t~load_msg_addr(), t~load_uint(16), t~load_msg_addr(), t~load_uint(16), t~load_uint(32), t~load_uint(64), t~load_uint(32));
+}
+
+() send(slice to, int amount, int mode) impure inline {
     send_raw_message(begin_cell().store_uint(0x10, 6).store_slice(to).store_coins(amount)
         .store_uint(0, 1 + 4 + 4 + 64 + 32 + 1 + 1).end_cell(), mode);
+}
+
+() close_to(slice to) impure inline {
+    send(to, 0, 128 + 32);  ;; whole balance, destroy the account
 }
 
 () recv_internal(int my_balance, int msg_value, cell in_msg_full, slice in_msg_body) impure {
     slice cs = in_msg_full.begin_parse();
     if (cs~load_uint(4) & 1) { return (); }  ;; ignore bounces
     slice sender = cs~load_msg_addr();
-    (slice poster, slice worker, slice treasury, int fee_bps, int deadline, int task_id) = load_data();
-    throw_unless(err::bad_fee, fee_bps <= MAX_FEE_BPS);
+    load_data();
+    (slice treasury, int fee_bps, slice reviewer, int reviewer_bps, int deadline, int task_id, int hold_s) = load_terms();
+    throw_unless(err::bad_fee, (fee_bps <= MAX_BPS) & (reviewer_bps <= MAX_BPS));
+    int is_poster = equal_slices(sender, poster);
+    int is_worker = equal_slices(sender, worker);
 
     int op = in_msg_body.slice_bits() >= 32 ? in_msg_body~load_uint(32) : 0;
-    if (op == 0) {  ;; deploy / top-up: only the poster funds the escrow
-        throw_unless(err::not_poster, equal_slices(sender, poster));
+    if (op == 0) {  ;; deploy / top-up: only the poster funds the escrow, only while open
+        throw_unless(err::not_poster, is_poster);
+        throw_unless(err::bad_state, state == 0);
+        return ();
+    }
+    if (op == op::accept) {
+        throw_unless(err::not_poster, is_poster);
+        throw_unless(err::bad_state, state == 0);
+        int amount = my_balance - msg_value - RESERVE;  ;; escrowed amount, without this message's gas
+        throw_unless(err::bad_state, amount > 0);
+        int fee = amount * fee_bps / 10000;
+        int has_reviewer = reviewer.preload_uint(2) != 0;
+        int rev = has_reviewer ? amount * reviewer_bps / 10000 : 0;
+        int first = (amount - fee - rev) / 2;
+        if (fee > 0) { send(treasury, fee, 1); }
+        if (rev > 0) { send(reviewer, rev, 1); }
+        send(worker, first, 1);
+        state = 1;
+        accepted_at = now();
+        save_data();
+        return ();
+    }
+    int is_reviewer = (reviewer.preload_uint(2) != 0) & equal_slices(sender, reviewer);
+    if (op == op::claim) {
+        if (state == 2) {  ;; nobody ruled within 30 days: split what is left
+            throw_unless(err::too_early, now() > defect_at + DEFECT_TIMEOUT);
+            send(poster, (my_balance - msg_value - RESERVE) / 2, 1);
+            close_to(worker);
+            return ();
+        }
+        throw_unless(err::bad_state, state == 1);
+        throw_unless(err::too_early, now() >= accepted_at + hold_s);
+        close_to(worker);
+        return ();
+    }
+    if (op == op::defect) {
+        throw_unless(err::not_poster, is_poster);
+        throw_unless(err::bad_state, state == 1);
+        throw_unless(err::too_late, now() < accepted_at + hold_s);
+        state = 2;
+        defect_at = now();
+        save_data();
         return ();
     }
     if (op == op::release) {
-        throw_unless(err::not_poster, equal_slices(sender, poster));
-        int amount = my_balance - msg_value - RESERVE;  ;; escrowed amount, without this message's gas
-        int fee = amount > 0 ? amount * fee_bps / 10000 : 0;
-        if (fee > 0) { send_all(treasury, fee, 1); }
-        send_all(worker, 0, 128 + 32);
+        throw_unless(err::not_poster, is_poster | (is_reviewer & (state == 2)));
+        throw_unless(err::bad_state, state != 0);
+        close_to(worker);
         return ();
     }
     if (op == op::decline) {
-        throw_unless(err::not_worker, equal_slices(sender, worker));
-        send_all(poster, 0, 128 + 32);
+        throw_unless(err::not_worker, is_worker);
+        close_to(poster);
         return ();
     }
     if (op == op::refund) {
-        throw_unless(err::not_poster, equal_slices(sender, poster));
-        throw_unless(err::too_early, now() > deadline);
-        send_all(poster, 0, 128 + 32);
+        if (state == 0) {
+            throw_unless(err::not_poster, is_poster);
+            throw_unless(err::too_early, now() > deadline);
+        } else {
+            throw_unless(err::bad_state, state == 2);
+            throw_unless(err::not_poster, is_reviewer);  ;; only the reviewer rules a defect for the poster
+        }
+        close_to(poster);
         return ();
     }
     throw(err::bad_op);
 }
 
-(slice, slice, slice, int, int, int) get_escrow() method_id {
-    return load_data();
+(slice, slice, int, int, int, slice, int, slice, int, int, int, int) get_escrow() method_id {
+    load_data();
+    (slice treasury, int fee_bps, slice reviewer, int reviewer_bps, int deadline, int task_id, int hold_s) = load_terms();
+    return (poster, worker, state, accepted_at, defect_at, treasury, fee_bps, reviewer, reviewer_bps, deadline, task_id, hold_s);
 }
