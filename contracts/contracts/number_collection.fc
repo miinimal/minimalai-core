@@ -1,0 +1,127 @@
+;; MINIMALCULT city numbers — NFT collection (TEP-62) and DNS resolver for numeric labels (TEP-81), block B10c.
+;;
+;; The City Hall (mayor.fc) delegates numeric labels to this contract; this contract delegates "N" to the item of
+;; index N (dns_next_resolver), and the item resolves to its owner. Only the mayor wallet mints.
+;;
+;; Storage: owner:MsgAddressInt next_index:uint64 item_code:^Cell content:^Cell
+;; Messages (owner only): op::mint (0x4d494e54 "MINT") query_id:uint64 index:uint64 amount:Coins ^[owner:MsgAddressInt ^content]
+;;                        op::owner (0x4f574e52 "OWNR") query_id:uint64 new_owner:MsgAddressInt
+;; Get-methods: get_collection_data, get_nft_address_by_index, get_nft_content, dnsresolve.
+
+#include "stdlib.fc";
+
+int equal_slices(slice a, slice b) asm "SDEQ";
+int string_hash(slice s) asm "SHA256U";
+
+const op::mint = 0x4d494e54;
+const op::owner = 0x4f574e52;
+const err::not_owner = 401;
+const err::bad_index = 403;
+const err::bad_op = 404;
+const DNS_NEXT_RESOLVER = 0xba93;
+
+(slice, int, cell, cell) load_data() inline {
+    slice ds = get_data().begin_parse();
+    return (ds~load_msg_addr(), ds~load_uint(64), ds~load_ref(), ds~load_ref());
+}
+
+() save_data(slice owner, int next_index, cell item_code, cell content) impure inline {
+    set_data(begin_cell().store_slice(owner).store_uint(next_index, 64).store_ref(item_code).store_ref(content).end_cell());
+}
+
+cell item_state_init(int index, cell item_code) inline {
+    cell data = begin_cell().store_uint(index, 64).store_slice(my_address()).end_cell();
+    return begin_cell().store_uint(0, 2).store_dict(item_code).store_dict(data).store_uint(0, 1).end_cell();
+}
+
+slice item_address(cell state_init) inline {
+    return begin_cell().store_uint(4, 3).store_int(0, 8).store_uint(cell_hash(state_init), 256).end_cell().begin_parse();
+}
+
+() recv_internal(int my_balance, int msg_value, cell in_msg_full, slice in_msg_body) impure {
+    if (in_msg_body.slice_empty?()) { return (); }
+    slice cs = in_msg_full.begin_parse();
+    if (cs~load_uint(4) & 1) { return (); }
+    slice sender = cs~load_msg_addr();
+    (slice owner, int next_index, cell item_code, cell content) = load_data();
+    throw_unless(err::not_owner, equal_slices(sender, owner));
+    int op = in_msg_body~load_uint(32);
+    int query_id = in_msg_body~load_uint(64);
+    if (op == op::mint) {
+        int index = in_msg_body~load_uint(64);
+        int amount = in_msg_body~load_coins();
+        cell init_body = in_msg_body~load_ref();
+        throw_unless(err::bad_index, index >= 1);
+        cell state_init = item_state_init(index, item_code);
+        slice to = item_address(state_init);
+        var msg = begin_cell().store_uint(0x18, 6).store_slice(to).store_coins(amount)
+            .store_uint(4 + 2 + 1, 1 + 4 + 4 + 64 + 32 + 1 + 1 + 1).store_ref(state_init).store_ref(init_body);
+        send_raw_message(msg.end_cell(), 1);
+        if (index >= next_index) { next_index = index + 1; }
+        save_data(owner, next_index, item_code, content);
+        return ();
+    }
+    if (op == op::owner) {
+        save_data(in_msg_body~load_msg_addr(), next_index, item_code, content);
+        return ();
+    }
+    throw(err::bad_op);
+}
+
+(int, cell, slice) get_collection_data() method_id {
+    (slice owner, int next_index, _, cell content) = load_data();
+    return (next_index, content, owner);
+}
+
+slice get_nft_address_by_index(int index) method_id {
+    (_, _, cell item_code, _) = load_data();
+    return item_address(item_state_init(index, item_code));
+}
+
+cell get_nft_content(int index, cell individual_content) method_id {
+    return individual_content;
+}
+
+;; digits only, no leading zero (the canonical label); returns -1 when not a number
+int parse_number(slice s) inline {
+    int n = s.slice_bits() / 8;
+    if ((n < 1) | (n > 9)) { return -1; }
+    int v = 0;
+    int first = -1;
+    repeat (n) {
+        int b = s~load_uint(8);
+        if ((b < 48) | (b > 57)) { return -1; }
+        if (first) { if (b == 48) { return -1; } first = 0; }
+        v = v * 10 + (b - 48);
+    }
+    return v;
+}
+
+;; TEP-81: "\0N\0" or "N\0" -> next resolver = the item of N; the client continues with "\0" at the item.
+(int, cell) dnsresolve(slice subdomain, int category) method_id {
+    int bits = subdomain.slice_bits();
+    if (bits == 0) { return (0, null()); }
+    int consumed = 0;
+    if (subdomain.preload_uint(8) == 0) { subdomain~load_uint(8); consumed = 8; }
+    builder lb = begin_cell();
+    int n = 0;
+    int done = 0;
+    while ((~ done) & (subdomain.slice_bits() >= 8)) {
+        int b = subdomain.preload_uint(8);
+        if (b == 0) { done = -1; } else { subdomain~load_uint(8); lb = lb.store_uint(b, 8); n += 1; }
+    }
+    if ((n == 0) | (~ done)) { return (0, null()); }
+    int index = parse_number(lb.end_cell().begin_parse());
+    if (index < 1) { return (0, null()); }
+    (_, _, cell item_code, _) = load_data();
+    slice item = item_address(item_state_init(index, item_code));
+    cell rec = begin_cell().store_uint(DNS_NEXT_RESOLVER, 16).store_slice(item).end_cell();
+    consumed += n * 8;   ;; the terminator stays for the item
+    if (category == 0) {
+        cell set = new_dict();
+        set~udict_set_ref(256, string_hash("dns_next_resolver"), rec);
+        return (consumed, set);
+    }
+    if (category == string_hash("dns_next_resolver")) { return (consumed, rec); }
+    return (consumed, rec);
+}

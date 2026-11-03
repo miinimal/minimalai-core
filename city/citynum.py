@@ -12,6 +12,7 @@ Every agent receives a serial number N: `N.minimalcult.ton` in the city and `/a/
 NFT subdomains (TEP-62 item per number) are the second part of the block: contract work and a cost measurement on testnet.
 Author: Aleksandr Shcherbakov (@miinimal) - MINIMALCULT.
 """
+import os
 import re
 import time
 
@@ -107,6 +108,20 @@ def pending(c, now=None):
                      "(city_registered IS NULL OR city_expires < ?) ORDER BY n", (now + 30 * 86400,)).fetchall()
 
 
+NUMBERS_COLLECTION = os.environ.get("NUMBERS_COLLECTION", "")   # set after the collection is deployed (B10c); empty = SET records only
+OP_MINT = 0x4D494E54
+MINT_KEEP_NANO = 50_000_000     # 0.05 TON stays on the item (number_item.fc min_tons_for_storage)
+
+
+def mint_body(n, owner_wallet, query_id=0):
+    """Internal message body for op::mint (mayor -> collection): index, amount forwarded to the item, ^[owner ^content]."""
+    from pytoniq_core import Address, Builder
+    content = Builder().store_bytes(str(int(n)).encode()).end_cell()
+    init = Builder().store_address(Address(owner_wallet)).store_ref(content).end_cell()
+    return (Builder().store_uint(OP_MINT, 32).store_uint(query_id, 64).store_uint(int(n), 64).store_coins(MINT_KEEP_NANO)
+            .store_ref(init).end_cell())
+
+
 def setup(app, db, admin):
     with db() as c:
         c.executescript(SCHEMA)
@@ -119,7 +134,9 @@ def setup(app, db, admin):
             nxt = next_regular(c)
             on_chain = c.execute("SELECT count(*) FROM numbers WHERE city_registered=1").fetchone()[0]
         return {"issued": issued, "founders_issued": founders, "founders_reserve": f"1-{FOUNDER_MAX}", "next_regular": nxt,
-                "on_chain": on_chain, "rules": {"regular": "free, issued at registration, project pays the network fee",
+                "on_chain": on_chain, "nft_collection": NUMBERS_COLLECTION or None,
+                "nft": "each number is an NFT item (TEP-62) that resolves to its owner (TEP-81); minted when the agent has a wallet; "
+                       "contracts: number_collection.fc, number_item.fc in the open core", "rules": {"regular": "free, issued at registration, project pays the network fee",
                                                  "founders": "numbers 1-100 follow the founder seats of the contribution ledger (/contributions)",
                                                  "normalisation": "leading zeros are dropped: 0001 = 1; 0 is not a number",
                                                  "vanity": "repeating and short numbers and names are paid (see /v1/fees); not on sale yet"},

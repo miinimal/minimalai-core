@@ -4,11 +4,14 @@
 ;; dnsresolve("\0name\0", category) here; the contract answers with the agent's wallet (category sha256("wallet"),
 ;; record dns_smc_address#9fd3) or, for category 0, the record set of that name. Names expire; the mayor renews them.
 ;;
-;; Storage: mayor:MsgAddress names:(HashmapE 256 ^[wallet:MsgAddressInt expires:uint32])  key = sha256(label)
+;; Storage: mayor:MsgAddress names:(HashmapE 256 ^[wallet:MsgAddressInt expires:uint32]) numbers:(Maybe ^[collection:MsgAddressInt ^item_code])
+;;   key = sha256(label). numbers (block B10c): numeric labels "N" are delegated to the NFT item of index N of the city
+;;   numbers collection (number_collection.fc / number_item.fc) — the mayor computes the item address itself.
 ;; Messages (mayor only; anyone else bounces):
 ;;   op::set  (0x53455421 "SET!") query_id:uint64 expires:uint32 wallet:MsgAddressInt ^label   label cell: raw UTF-8 bytes
 ;;   op::drop (0x44524f50 "DROP") query_id:uint64 ^label
 ;;   op::mayor(0x4d41594f "MAYO") query_id:uint64 new_mayor:MsgAddressInt            hand the city over (owner key rotation)
+;;   op::numbers(0x4e554d42 "NUMB") query_id:uint64 collection:MsgAddressInt ^item_code  delegate numeric labels to the collection
 ;; Get-methods: dnsresolve(subdomain, category) per TEP-81; get_name(label_cell) -> (wallet, expires); get_mayor().
 ;; Money: names are registered by the project (newcomers free, short names by auction off-chain for now); no funds of
 ;; agents are ever held here.
@@ -21,6 +24,7 @@ int string_hash(slice s) asm "SHA256U";   ;; sha256 of the data bits of a slice 
 const op::set = 0x53455421;
 const op::drop = 0x44524f50;
 const op::mayor = 0x4d41594f;
+const op::numbers = 0x4e554d42;
 
 const err::not_mayor = 401;
 const err::bad_label = 402;
@@ -29,13 +33,41 @@ const err::bad_op = 404;
 const DNS_SMC_ADDRESS = 0x9fd3;
 const DNS_NEXT_RESOLVER = 0xba93;
 
-(slice, cell) load_data() inline {
+(slice, cell, cell) load_data() inline {
     slice ds = get_data().begin_parse();
-    return (ds~load_msg_addr(), ds~load_dict());
+    slice mayor = ds~load_msg_addr();
+    cell names = ds~load_dict();
+    cell numbers = null();
+    if (ds.slice_bits() > 0) { numbers = ds~load_maybe_ref(); }
+    return (mayor, names, numbers);
 }
 
-() save_data(slice mayor, cell names) impure inline {
-    set_data(begin_cell().store_slice(mayor).store_dict(names).end_cell());
+() save_data(slice mayor, cell names, cell numbers) impure inline {
+    set_data(begin_cell().store_slice(mayor).store_dict(names).store_maybe_ref(numbers).end_cell());
+}
+
+;; digits only, no leading zero -> value; -1 otherwise
+int parse_number(slice s) inline {
+    int n = s.slice_bits() / 8;
+    if ((n < 1) | (n > 9)) { return -1; }
+    int v = 0;
+    int first = -1;
+    repeat (n) {
+        int b = s~load_uint(8);
+        if ((b < 48) | (b > 57)) { return -1; }
+        if (first) { if (b == 48) { return -1; } first = 0; }
+        v = v * 10 + (b - 48);
+    }
+    return v;
+}
+
+slice number_item(cell numbers, int index) inline {
+    slice ns = numbers.begin_parse();
+    slice collection = ns~load_msg_addr();
+    cell item_code = ns~load_ref();
+    cell data = begin_cell().store_uint(index, 64).store_slice(collection).end_cell();
+    cell state_init = begin_cell().store_uint(0, 2).store_dict(item_code).store_dict(data).store_uint(0, 1).end_cell();
+    return begin_cell().store_uint(4, 3).store_int(0, 8).store_uint(cell_hash(state_init), 256).end_cell().begin_parse();
 }
 
 ;; label cell -> (key, byte length); only bytes 33..255 allowed, 1..63 bytes
@@ -56,7 +88,7 @@ const DNS_NEXT_RESOLVER = 0xba93;
     slice cs = in_msg_full.begin_parse();
     if (cs~load_uint(4) & 1) { return (); }
     slice sender = cs~load_msg_addr();
-    (slice mayor, cell names) = load_data();
+    (slice mayor, cell names, cell numbers) = load_data();
     throw_unless(err::not_mayor, equal_slices(sender, mayor));
     int op = in_msg_body~load_uint(32);
     in_msg_body~load_uint(64);
@@ -66,17 +98,23 @@ const DNS_NEXT_RESOLVER = 0xba93;
         cell label = in_msg_body~load_ref();
         (int key, _) = label_key(label);
         names~udict_set_ref(256, key, begin_cell().store_slice(wallet).store_uint(expires, 32).end_cell());
-        save_data(mayor, names);
+        save_data(mayor, names, numbers);
         return ();
     }
     if (op == op::drop) {
         (int key, _) = label_key(in_msg_body~load_ref());
         names~udict_delete?(256, key);
-        save_data(mayor, names);
+        save_data(mayor, names, numbers);
         return ();
     }
     if (op == op::mayor) {
-        save_data(in_msg_body~load_msg_addr(), names);
+        save_data(in_msg_body~load_msg_addr(), names, numbers);
+        return ();
+    }
+    if (op == op::numbers) {
+        slice collection = in_msg_body~load_msg_addr();
+        cell item_code = in_msg_body~load_ref();
+        save_data(mayor, names, begin_cell().store_slice(collection).store_ref(item_code).end_cell());
         return ();
     }
     throw(err::bad_op);
@@ -98,9 +136,24 @@ const DNS_NEXT_RESOLVER = 0xba93;
         if (b == 0) { done = -1; } else { lb = lb.store_uint(b, 8); n += 1; }
     }
     if ((n == 0) | (~ done)) { return (0, null()); }
+    (_, cell names, cell numbers) = load_data();
+    slice lbl = lb.end_cell().begin_parse();
+    if (~ null?(numbers)) {
+        int index = parse_number(lbl);
+        if (index >= 1) {   ;; B10c: a number -> next resolver = the NFT item of that number; the terminator stays for the item
+            if (subdomain.slice_bits() > 0) { return (0, null()); }
+            cell rec = begin_cell().store_uint(DNS_NEXT_RESOLVER, 16).store_slice(number_item(numbers, index)).end_cell();
+            consumed += n * 8;
+            if (category == 0) {
+                cell set = new_dict();
+                set~udict_set_ref(256, string_hash("dns_next_resolver"), rec);
+                return (consumed, set);
+            }
+            return (consumed, rec);
+        }
+    }
     consumed += (n + 1) * 8;
-    (_, cell names) = load_data();
-    (cell rec, int found) = names.udict_get_ref?(256, string_hash(lb.end_cell().begin_parse()));
+    (cell rec, int found) = names.udict_get_ref?(256, string_hash(lbl));
     if (~ found) { return (0, null()); }
     slice r = rec.begin_parse();
     slice wallet = r~load_msg_addr();
@@ -118,7 +171,7 @@ const DNS_NEXT_RESOLVER = 0xba93;
 }
 
 (slice, int) get_name(cell label) method_id {
-    (_, cell names) = load_data();
+    (_, cell names, _) = load_data();
     (cell rec, int found) = names.udict_get_ref?(256, string_hash(label.begin_parse()));
     if (~ found) { return (null(), 0); }
     slice r = rec.begin_parse();
@@ -126,6 +179,13 @@ const DNS_NEXT_RESOLVER = 0xba93;
 }
 
 slice get_mayor() method_id {
-    (slice mayor, _) = load_data();
+    (slice mayor, _, _) = load_data();
     return mayor;
 }
+
+slice get_number_item(int index) method_id {
+    (_, _, cell numbers) = load_data();
+    if (null?(numbers)) { return null(); }
+    return number_item(numbers, index);
+}
+

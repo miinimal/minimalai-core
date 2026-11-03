@@ -20,7 +20,7 @@ const dnsName = (s) => beginCell().storeBuffer(Buffer.from(s, 'utf8')).endCell()
 
   const bc = await Blockchain.create();
   const mayor = await bc.treasury('mayor'), stranger = await bc.treasury('stranger'), agent = await bc.treasury('agent');
-  const data = beginCell().storeAddress(mayor.address).storeDict(null).endCell();
+  const data = beginCell().storeAddress(mayor.address).storeDict(null).storeMaybeRef(null).endCell();
   const init = { code, data }; const address = contractAddress(0, init);
   const ex = (res) => res.transactions.find((t) => t.inMessage?.info?.dest?.equals?.(address))?.description?.computePhase?.exitCode;
   const now = Math.floor(Date.now() / 1000); bc.now = now;

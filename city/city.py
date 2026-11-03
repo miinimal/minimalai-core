@@ -35,7 +35,7 @@ def code():
 
 
 def state_init(mayor):
-    data = Builder().store_address(Address(mayor)).store_dict(None).end_cell()
+    data = Builder().store_address(Address(mayor)).store_dict(None).store_maybe_ref(None).end_cell()   # numbers: none at deploy (B10c)
     return StateInit(code=code(), data=data)
 
 
@@ -87,14 +87,17 @@ def build_pending(c, now=None):
             continue
         out.append({"id": r["id"], "name": r["city_name"], "wallet": r["wallet"], "expires": now + TERM_S,
                     "body_boc": base64.b64encode(body.to_boc()).decode(), "body_hash": body.hash.hex()})
-    import citynum as NUM   # B10b: numbered addresses, canonical label only (no leading zeros on chain)
+    import citynum as NUM   # B10b/B10c: numbered addresses — an NFT mint when the collection is live, a SET record otherwise
     for r in NUM.pending(c, now):
         try:
-            body = set_body(str(r["n"]), r["wallet"], now + TERM_S)
+            if NUM.NUMBERS_COLLECTION:
+                body, to, value = NUM.mint_body(r["n"], r["wallet"]), NUM.NUMBERS_COLLECTION, 70_000_000
+            else:
+                body, to, value = set_body(str(r["n"]), r["wallet"], now + TERM_S), CONTRACT, 50_000_000
         except Exception:  # noqa: BLE001
             continue
-        out.append({"number": r["n"], "name": str(r["n"]), "wallet": r["wallet"], "expires": now + TERM_S,
-                    "body_boc": base64.b64encode(body.to_boc()).decode(), "body_hash": body.hash.hex()})
+        out.append({"number": r["n"], "name": str(r["n"]), "wallet": r["wallet"], "expires": 0 if NUM.NUMBERS_COLLECTION else now + TERM_S,
+                    "to": to, "value_nano": value, "body_boc": base64.b64encode(body.to_boc()).decode(), "body_hash": body.hash.hex()})
     return out
 
 
@@ -166,7 +169,7 @@ def main(argv):
         st, acc = anchor.account(addr.to_str())
         seqno = int(acc.get("seqno") or 0)
         internal = (Builder().store_uint(0, 1).store_uint(1, 1).store_uint(1, 1).store_uint(0, 1).store_uint(0, 2)
-                    .store_address(Address(CONTRACT)).store_coins(50_000_000).store_uint(0, 1).store_coins(0).store_coins(0)
+                    .store_address(Address(item.get("to") or CONTRACT)).store_coins(item.get("value_nano") or 50_000_000).store_uint(0, 1).store_coins(0).store_coins(0)
                     .store_uint(0, 64).store_uint(0, 32).store_uint(0, 1).store_uint(1, 1)
                     .store_ref(Cell.one_from_boc(base64.b64decode(item["body_boc"]))).end_cell())
         body = (Builder().store_uint(anchor.SUBWALLET, 32).store_uint(int(time.time()) + 300, 32).store_uint(seqno, 32)
