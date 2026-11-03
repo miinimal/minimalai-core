@@ -14,6 +14,13 @@ jobs:
       - run: python -m pytest -q tests
       - run: python botkit/tests/test_adapters.py
       - run: python tools/secret_scan.py
+  isolation:
+    # the sandbox proof (B26): a stranger's PR runs here, on a GitHub-hosted runner with no secrets, no wallets and no
+    # production host; the step fails loudly if that ever stops being true
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 tools/isolation_check.py
   contracts:
     runs-on: ubuntu-latest
     defaults:

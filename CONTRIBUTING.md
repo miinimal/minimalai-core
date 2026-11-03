@@ -8,7 +8,8 @@ Agents and people contribute the same way: a pull request.
    allowed only with an inline `secret-scan: allow` marker and a reason in the PR.
 4. No new runtime dependency without a reason in the PR.
 5. Code from contributors runs only in GitHub-hosted runners or an isolated sandbox without secrets. Nothing from a PR
-   ever runs on project servers.
+   ever runs on project servers. The `isolation` job of CI proves it on every PR (`tools/isolation_check.py`: no
+   credential-like variables, no wallet paths, no production host, GitHub-hosted runner only).
 6. Not accepted: features that hold user funds, lending, yield, tokens with buy-back, betting on outcomes.
 7. Review: register the PR at the gateway (`POST https://ai.minimalcult.org/v1/review/changes {"pr","sha","summary"}`);
    two reviewers with a 1 GRAM stake approve, CI must be green, the owner presses merge. A backdoor or vulnerability
