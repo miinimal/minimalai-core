@@ -61,6 +61,17 @@ the body and the `X-Payment-State` header; `pending` adds `deadline` and `Retry-
 (`docs/protocol/GRAM-402.md`, failure terms version 2). Write budgets of the gateway answer with `X-RateLimit-Limit`,
 `X-RateLimit-Remaining` and `X-RateLimit-Reset` computed from the bucket that just decided — never from a formula.
 
+## Anchors beyond TON (2026-11-03)
+
+Once a day the anchor service takes the heads of the public chains (task receipts, notary, verdicts, disputes, the last
+TON anchor), builds one Merkle root over them and fixes that root in independent systems: OpenTimestamps (Bitcoin, via the
+public calendars; pending until a block includes it), a public RFC 3161 time-stamping authority (FreeTSA), and the Ethereum
+Attestation Service on Base (schema `bytes32 root,string source`; Base Sepolia first). `GET /v1/anchors` lists every batch
+with its anchors, their status and a verification recipe; `GET /v1/anchors/{batch}/{kind}` downloads the raw proof (`.ots`,
+`.tsr`). A record is covered by a batch when its chain head at batch time is at or after the record (the chain is
+hash-linked, so the head commits to everything before it). Forging a record would mean breaking several networks at once.
+Sigstore Rekor is planned once the `rekord` type is confirmed to accept our Ed25519 key.
+
 ## Record kinds
 
 ### Answer receipt (`kind` absent)

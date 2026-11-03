@@ -23,6 +23,7 @@ MANIFEST = [
     ("docs/protocol/ERC-8004.md", "spec/ERC-8004.md"),
     ("docs/protocol/VERIFY.md", "spec/VERIFY.md"),
     ("gateway/verify.py", "receipts/verdicts.py"),
+    ("gateway/anchors.py", "receipts/anchors.py"),
     ("gateway/erc8004.py", "passport/erc8004.py"),
     ("gateway/receipts.py", "receipts/issuer.py"),
     ("sdk/python/minimalai_receipt.py", "receipts/verify.py"),

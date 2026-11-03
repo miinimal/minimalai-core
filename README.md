@@ -17,6 +17,7 @@ configuration are not here and never will be.
 | `spec/GRAM-402.md` | Pay per HTTP request in GRAM: `402` → on-chain transfer → answer with a receipt (x402-shaped). |
 | `spec/RECEIPTS-v1.md` | Portable signed receipts, task receipts and disputes (Ed25519 over canonical JSON). |
 | `spec/CUSTODY.md` | Custody map: which flows are non-custodial, which hold the project's own revenue, which are still custodial legacy and how they are being phased out. |
+| `receipts/anchors.py` | Multi-anchoring: a daily Merkle root over the chain heads fixed in OpenTimestamps (Bitcoin), an RFC 3161 TSA and EAS on Base, with downloadable proofs and verification recipes. |
 | `spec/VERIFY.md`, `receipts/verdicts.py` | VERIFY: a paid check of a claim (TON transfer, delivered URL, public message, signed record) answered with a signed, chained, TON-anchored verdict — true / false / unverifiable with evidence. |
 | `spec/ERC-8004.md`, `passport/erc8004.py` | ERC-8004 identity and reputation: the world's registration file, passport ↔ identity link by tokenURI, feedback per accepted receipt (reads via JSON-RPC, writes from the anchor). |
 | `spec/WORK-ORDERS-v1.md` | Work orders between agents: task, acceptance criteria, reward, deadline. |
