@@ -34,7 +34,7 @@ CREATE TABLE IF NOT EXISTS grants(id INTEGER PRIMARY KEY, ts INTEGER, sponsor TE
 CREATE TABLE IF NOT EXISTS grant_apps(id INTEGER PRIMARY KEY, grant_id INTEGER, ts INTEGER, key_hash TEXT, text TEXT, link TEXT,
     UNIQUE(grant_id, key_hash));
 CREATE TABLE IF NOT EXISTS grant_judges(grant_id INTEGER, key_hash TEXT, stake_nano INTEGER, stake_w INTEGER, ts INTEGER, vote INTEGER,
-    PRIMARY KEY(grant_id, key_hash));
+    stake_address TEXT, PRIMARY KEY(grant_id, key_hash));
 """
 
 
@@ -117,10 +117,17 @@ def setup(app, db, get_key):
             aid = c.execute("SELECT id FROM grant_apps WHERE grant_id=? AND key_hash=?", (gid, key["key_hash"])).fetchone()[0]
         return {"grant_id": gid, "application_id": aid}
 
+    with db() as c:
+        if "stake_address" not in [r[1] for r in c.execute("PRAGMA table_info(grant_judges)")]:
+            c.execute("ALTER TABLE grant_judges ADD COLUMN stake_address TEXT")
+
     @app.post("/v1/grants/{gid}/judge")
-    def judge(gid: int, authorization: str = Header(None)):
-        """Join the jury: reputation tier >= JUDGE_TIER and a stake. The first JUDGES_NEEDED form the jury."""
+    async def judge(gid: int, request: Request, authorization: str = Header(None)):
+        """Join the jury: reputation tier >= JUDGE_TIER and a stake - from your balance, or non-custodially by presenting
+        your Stake v1 contract {"stake_address"} (purpose 2, locked, funded >= JUDGE_STAKE_NANO). The first JUDGES_NEEDED form the jury."""
         key = get_key(authorization)
+        body = await request.json() if (await request.body()) else {}
+        onchain = str(body.get("stake_address") or "")
         with db() as c:
             g = load(c, gid)
             if g["status"] != "open":
@@ -134,12 +141,20 @@ def setup(app, db, get_key):
                 raise HTTPException(409, "the jury is complete")
             if c.execute("SELECT 1 FROM grant_judges WHERE grant_id=? AND key_hash=?", (gid, key["key_hash"])).fetchone():
                 raise HTTPException(409, "already a judge")
-            w = holds.take(c, key["key_hash"], JUDGE_STAKE_NANO, "services")
-            if w is None:
-                raise HTTPException(402, f"balance too low for the judge stake ({JUDGE_STAKE_NANO / 1e9:g} GRAM)")
-            c.execute("INSERT INTO grant_judges(grant_id,key_hash,stake_nano,stake_w,ts) VALUES(?,?,?,?,?)",
-                      (gid, key["key_hash"], JUDGE_STAKE_NANO, w, int(time.time())))
-            c.execute("INSERT INTO ledger(ts,key_hash,delta_nano,reason) VALUES(?,?,?,?)", (int(time.time()), key["key_hash"], -JUDGE_STAKE_NANO, f"grant_judge_stake:{gid}"))
+            if onchain:
+                import stake as STK
+                ok, info = STK.verify_stake(onchain, key["owner"] or "", 2, JUDGE_STAKE_NANO)
+                if not ok:
+                    raise HTTPException(422, f"stake contract not accepted: {info}")
+                c.execute("INSERT INTO grant_judges(grant_id,key_hash,stake_nano,stake_w,ts,stake_address) VALUES(?,?,?,?,?,?)",
+                          (gid, key["key_hash"], JUDGE_STAKE_NANO, 0, int(time.time()), onchain))
+            else:
+                w = holds.take(c, key["key_hash"], JUDGE_STAKE_NANO, "services")
+                if w is None:
+                    raise HTTPException(402, f"balance too low for the judge stake ({JUDGE_STAKE_NANO / 1e9:g} GRAM)")
+                c.execute("INSERT INTO grant_judges(grant_id,key_hash,stake_nano,stake_w,ts) VALUES(?,?,?,?,?)",
+                          (gid, key["key_hash"], JUDGE_STAKE_NANO, w, int(time.time())))
+                c.execute("INSERT INTO ledger(ts,key_hash,delta_nano,reason) VALUES(?,?,?,?)", (int(time.time()), key["key_hash"], -JUDGE_STAKE_NANO, f"grant_judge_stake:{gid}"))
         return {"grant_id": gid, "judge": receipts.pseudonym("key:" + key["key_hash"]), "stake_nano": JUDGE_STAKE_NANO}
 
     def settle(c, g, now):
@@ -156,9 +171,12 @@ def setup(app, db, get_key):
             holds.give(c, g["sponsor"], g["pool_nano"], g["pool_w"])
             c.execute("INSERT INTO ledger(ts,key_hash,delta_nano,reason) VALUES(?,?,?,?)", (now, g["sponsor"], g["pool_nano"], f"grant_refund:{gid}"))
             for j in judges:
-                if j["vote"] is None:
+                if j["vote"] is None and j["stake_address"]:
+                    import stake as STK
+                    STK.queue_slash(c, j["stake_address"], j["stake_nano"], f"silent grant judge #{gid}")
+                elif j["vote"] is None:
                     c.execute("INSERT INTO ledger(ts,key_hash,delta_nano,reason) VALUES(?,?,?,?)", (now, "treasury", j["stake_nano"], f"split:grant_silent_judge:{gid}"))
-                else:
+                elif not j["stake_address"]:
                     holds.give(c, j["key_hash"], j["stake_nano"], j["stake_w"])
                     c.execute("INSERT INTO ledger(ts,key_hash,delta_nano,reason) VALUES(?,?,?,?)", (now, j["key_hash"], j["stake_nano"], f"grant_judge_unstake:{gid}"))
             return "refunded"
@@ -177,8 +195,9 @@ def setup(app, db, get_key):
         c.execute("INSERT INTO ledger(ts,key_hash,delta_nano,reason) VALUES(?,?,?,?)", (now, wk, prize, f"grant_pay:{gid}"))
         per = fee // len(judges)
         for j in judges:
-            holds.give(c, j["key_hash"], j["stake_nano"] + per, j["stake_w"])
-            c.execute("INSERT INTO ledger(ts,key_hash,delta_nano,reason) VALUES(?,?,?,?)", (now, j["key_hash"], j["stake_nano"] + per, f"grant_judge_pay:{gid}"))
+            back = per if j["stake_address"] else j["stake_nano"] + per      # on-chain stakes stay in the judge's contract
+            holds.give(c, j["key_hash"], back, 0 if j["stake_address"] else j["stake_w"])
+            c.execute("INSERT INTO ledger(ts,key_hash,delta_nano,reason) VALUES(?,?,?,?)", (now, j["key_hash"], back, f"grant_judge_pay:{gid}"))
         return "awarded"
 
     @app.post("/v1/grants/{gid}/vote")
@@ -221,7 +240,8 @@ def setup(app, db, get_key):
                 holds.give(c, g["sponsor"], g["pool_nano"], g["pool_w"])
                 c.execute("INSERT INTO ledger(ts,key_hash,delta_nano,reason) VALUES(?,?,?,?)", (now, g["sponsor"], g["pool_nano"], f"grant_refund:{gid}"))
                 for j in c.execute("SELECT * FROM grant_judges WHERE grant_id=?", (gid,)).fetchall():
-                    holds.give(c, j["key_hash"], j["stake_nano"], j["stake_w"])
+                    if not j["stake_address"]:
+                        holds.give(c, j["key_hash"], j["stake_nano"], j["stake_w"])
                 return {"grant_id": gid, "status": "cancelled", "refunded_nano": g["pool_nano"]}
             if now >= g["deadline_ts"] + 7 * 86400:
                 return {"grant_id": gid, "status": settle(c, g, now) or "open"}

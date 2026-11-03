@@ -34,7 +34,7 @@ SCHEMA = """
 CREATE TABLE IF NOT EXISTS arbitrations(dispute_id TEXT PRIMARY KEY, ts INTEGER, requester TEXT, fee_nano INTEGER, fee_w INTEGER,
     status TEXT DEFAULT 'open', filled_ts INTEGER, outcome TEXT, decided_ts INTEGER);
 CREATE TABLE IF NOT EXISTS arbitration_jurors(dispute_id TEXT, key_hash TEXT, stake_nano INTEGER, stake_w INTEGER, ts INTEGER,
-    outcome TEXT, note TEXT, PRIMARY KEY(dispute_id, key_hash));
+    outcome TEXT, note TEXT, stake_address TEXT, PRIMARY KEY(dispute_id, key_hash));
 """
 
 
@@ -87,9 +87,16 @@ def setup(app, db, get_key, append):
             c.execute("INSERT INTO ledger(ts,key_hash,delta_nano,reason) VALUES(?,?,?,?)", (now, key["key_hash"], -FEE_NANO, f"arbitration_fee:{did}"))
             return view(c, did)
 
+    with db() as c:
+        if "stake_address" not in [r[1] for r in c.execute("PRAGMA table_info(arbitration_jurors)")]:
+            c.execute("ALTER TABLE arbitration_jurors ADD COLUMN stake_address TEXT")
+
     @app.post("/v1/disputes/{did}/judge")
-    def judge(did: str, authorization: str = Header(None)):
+    async def judge(did: str, request: Request, authorization: str = Header(None)):
+        """Join the jury with a stake from your balance or your Stake v1 contract {"stake_address"} (purpose 3)."""
         key = get_key(authorization)
+        body = await request.json() if (await request.body()) else {}
+        onchain = str(body.get("stake_address") or "")
         with db() as c:
             d = load(c, did)
             a = c.execute("SELECT * FROM arbitrations WHERE dispute_id=?", (did,)).fetchone()
@@ -106,12 +113,20 @@ def setup(app, db, get_key, append):
                 raise HTTPException(409, "the jury is complete")
             if c.execute("SELECT 1 FROM arbitration_jurors WHERE dispute_id=? AND key_hash=?", (did, key["key_hash"])).fetchone():
                 raise HTTPException(409, "already a juror")
-            w = holds.take(c, key["key_hash"], JUDGE_STAKE_NANO, "services")
-            if w is None:
-                raise HTTPException(402, f"balance too low for the juror stake ({JUDGE_STAKE_NANO / 1e9:g} GRAM)")
             now = int(time.time())
-            c.execute("INSERT INTO arbitration_jurors(dispute_id,key_hash,stake_nano,stake_w,ts) VALUES(?,?,?,?,?)", (did, key["key_hash"], JUDGE_STAKE_NANO, w, now))
-            c.execute("INSERT INTO ledger(ts,key_hash,delta_nano,reason) VALUES(?,?,?,?)", (now, key["key_hash"], -JUDGE_STAKE_NANO, f"arbitration_stake:{did}"))
+            if onchain:
+                import stake as STK
+                ok, info = STK.verify_stake(onchain, key["owner"] or "", 3, JUDGE_STAKE_NANO)
+                if not ok:
+                    raise HTTPException(422, f"stake contract not accepted: {info}")
+                c.execute("INSERT INTO arbitration_jurors(dispute_id,key_hash,stake_nano,stake_w,ts,stake_address) VALUES(?,?,?,?,?,?)",
+                          (did, key["key_hash"], JUDGE_STAKE_NANO, 0, now, onchain))
+            else:
+                w = holds.take(c, key["key_hash"], JUDGE_STAKE_NANO, "services")
+                if w is None:
+                    raise HTTPException(402, f"balance too low for the juror stake ({JUDGE_STAKE_NANO / 1e9:g} GRAM)")
+                c.execute("INSERT INTO arbitration_jurors(dispute_id,key_hash,stake_nano,stake_w,ts) VALUES(?,?,?,?,?)", (did, key["key_hash"], JUDGE_STAKE_NANO, w, now))
+                c.execute("INSERT INTO ledger(ts,key_hash,delta_nano,reason) VALUES(?,?,?,?)", (now, key["key_hash"], -JUDGE_STAKE_NANO, f"arbitration_stake:{did}"))
             if c.execute("SELECT count(*) FROM arbitration_jurors WHERE dispute_id=?", (did,)).fetchone()[0] >= JURORS:
                 c.execute("UPDATE arbitrations SET filled_ts=? WHERE dispute_id=?", (now, did))
             return view(c, did)
@@ -134,8 +149,9 @@ def setup(app, db, get_key, append):
                                                            "votes": {"upheld": votes.count("upheld"), "rejected": votes.count("rejected")}})
         share = int(a["fee_nano"] * JURY_SHARE) // len(js)
         for j in js:
-            holds.give(c, j["key_hash"], j["stake_nano"] + share, j["stake_w"])
-            c.execute("INSERT INTO ledger(ts,key_hash,delta_nano,reason) VALUES(?,?,?,?)", (now, j["key_hash"], j["stake_nano"] + share, f"arbitration_juror_pay:{did}"))
+            back = share if j["stake_address"] else j["stake_nano"] + share
+            holds.give(c, j["key_hash"], back, 0 if j["stake_address"] else j["stake_w"])
+            c.execute("INSERT INTO ledger(ts,key_hash,delta_nano,reason) VALUES(?,?,?,?)", (now, j["key_hash"], back, f"arbitration_juror_pay:{did}"))
         c.execute("INSERT INTO ledger(ts,key_hash,delta_nano,reason) VALUES(?,?,?,?)", (now, "platform", a["fee_nano"] - share * len(js), f"service_fee:arbitration:{did}"))
         return rec
 
@@ -177,7 +193,8 @@ def on_owner_resolved(c, did):
     if not c.execute("UPDATE arbitrations SET status='dissolved', decided_ts=? WHERE dispute_id=? AND status='open'", (now, did)).rowcount:
         return
     for j in c.execute("SELECT * FROM arbitration_jurors WHERE dispute_id=?", (did,)).fetchall():
-        holds.give(c, j["key_hash"], j["stake_nano"], j["stake_w"])
+        if not j["stake_address"]:
+            holds.give(c, j["key_hash"], j["stake_nano"], j["stake_w"])
     holds.give(c, a["requester"], a["fee_nano"], a["fee_w"])
     c.execute("INSERT INTO ledger(ts,key_hash,delta_nano,reason) VALUES(?,?,?,?)", (now, a["requester"], a["fee_nano"], f"arbitration_refund:{did}"))
 
@@ -189,9 +206,12 @@ def expire(c, now=None):
         if not c.execute("UPDATE arbitrations SET status='expired', decided_ts=? WHERE dispute_id=? AND status='open'", (now, a["dispute_id"])).rowcount:
             continue
         for j in c.execute("SELECT * FROM arbitration_jurors WHERE dispute_id=?", (a["dispute_id"],)).fetchall():
-            if j["outcome"]:
+            if j["outcome"] and not j["stake_address"]:
                 holds.give(c, j["key_hash"], j["stake_nano"], j["stake_w"])
-            else:
+            elif not j["outcome"] and j["stake_address"]:
+                import stake as STK
+                STK.queue_slash(c, j["stake_address"], j["stake_nano"], f"silent juror {a['dispute_id']}")
+            elif not j["outcome"]:
                 c.execute("INSERT INTO ledger(ts,key_hash,delta_nano,reason) VALUES(?,?,?,?)", (now, "treasury", j["stake_nano"], f"split:silent_juror:{a['dispute_id']}"))
         holds.give(c, a["requester"], a["fee_nano"], a["fee_w"])
         n += 1
