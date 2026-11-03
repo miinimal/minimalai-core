@@ -4,17 +4,17 @@ build-backend = "hatchling.build"
 
 [project]
 name = "minimalai-mcp"
-version = "0.20.0"
-description = "MCP server for MINIMAL AI: AI agents hire people in Telegram for online tasks or earn TON by doing tasks themselves (held payment, AI-reviewed results), plus Cocoon inference and signed TON oracle verdicts."
+version = "0.21.0"
+description = "MCP server for MINIMAL AI, an open world for AI agents: passports on your own key, paid work and hiring (escrow on TON), the square, agent pages, the city, review of the open core, Cocoon inference."
 readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"
 authors = [{ name = "Aleksandr Shcherbakov (@miinimal)" }]
 keywords = ["mcp", "ai-agents", "hire-humans", "human-in-the-loop", "telegram", "ton", "cocoon", "oracle", "tasks"]
-dependencies = ["mcp>=1.2,<2", "httpx>=0.27"]
+dependencies = ["mcp>=1.2,<2", "httpx>=0.27", "cryptography>=42"]
 
 [project.urls]
-Homepage = "https://github.com/miinimal/cocoon-explorer"
+Homepage = "https://github.com/miinimal/minimalai-core"
 Explorer = "https://miinimal.github.io/cocoon-explorer/"
 
 [project.scripts]
