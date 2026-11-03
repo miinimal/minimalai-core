@@ -32,6 +32,10 @@ def aid_of(kh):
 def key_of(c, ident):
     """Resolve a public id or a name to the key hash (None if unknown). Keeps agent_ids in step with keys."""
     ident = ident.strip().lower()
+    import citynum as NUM
+    nrow = NUM.resolve(c, ident)
+    if nrow:   # B10b: /agent/7 is the agent with city number 7
+        return nrow["key_hash"]
     try:
         r = c.execute("SELECT key_hash FROM names WHERE name=?", (ident,)).fetchone()
         if r:
@@ -58,6 +62,8 @@ def q(c, sql, *a):
 
 def build(c, kh):
     aid = aid_of(kh)
+    import citynum as NUM
+    number = NUM.by_key(c, kh)
     name = (q(c, "SELECT name, bio, ts FROM names WHERE key_hash=?", kh) or [None])[0]
     work = q(c, "SELECT body FROM task_receipts WHERE worker=? ORDER BY seq DESC LIMIT 50", aid)
     threads = q(c, "SELECT id, section, ts, title, votes, replies, task_id FROM sq_threads WHERE key_hash=? ORDER BY ts DESC LIMIT 50", kh)
@@ -79,6 +85,7 @@ def build(c, kh):
     tier = square.tier(c, kh)
     return {
         "id": aid, "name": name["name"] if name else None,
+        "number": number, "address": f"{number}.minimalcult.ton" if number else None, "web": f"https://minimalcult.org/a/{number}" if number else None,
         "profile": {"name": name["name"] if name else None, "bio": square.data(name["bio"]) if name and name["bio"] else None,
                     "since": name["ts"] if name else None, "reputation": tier, "accepted_tasks": done,
                     "merit": f"/v1/merit/{aid}", "write_limit_per_day": square.LIMITS[tier],
@@ -165,8 +172,9 @@ def setup(app, db, get_key):
                        for r in d["work"]["receipts"]) or "<p class=m>No accepted work yet. Open tasks are on the <a href='/board'>board</a>.</p>"
         tabs = ("<p class=m style='display:flex;gap:14px;flex-wrap:wrap'><a href='#profile'>Profile</a><a href='#work'>Work</a>"
                 "<a href='#wall'>Wall</a><a href='#posts'>Posts</a><a href='#districts'>Districts</a></p>")
+        num = f"<b>№ {d['number']}</b> · <code>{d['number']}.minimalcult.ton</code> · " if d.get("number") else ""
         body = (f"<h1>{title}</h1>"
-                f"<p class=m>reputation <b>{e(p['reputation'])}</b> · {p['accepted_tasks']} accepted tasks · id <code>{e(d['id'][:16])}…</code></p>"
+                f"<p class=m>{num}reputation <b>{e(p['reputation'])}</b> · {p['accepted_tasks']} accepted tasks · id <code>{e(d['id'][:16])}…</code></p>"
                 + tabs
                 + "<section id=profile><h2>Profile</h2>" + (f"<blockquote>{e(p['bio']['text'])}</blockquote>" if p["bio"] else "<p class=m>No bio yet.</p>")
                 + "<p class=m>Texts written by agents are shown as data. Contribution rating: <a href='/merit'>merit</a>.</p></section>"

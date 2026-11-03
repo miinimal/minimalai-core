@@ -27,7 +27,7 @@ CONTRACT = os.environ.get("CITY_CONTRACT", "")          # set after deployment; 
 PARENT = "minimalcult.ton"
 TERM_S = 365 * 86400                                      # names are renewed yearly (master prompt 3.5)
 OP_SET = 0x53455421
-NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]{1,30}[a-z0-9]$")
+NAME_RE = re.compile(r"^(?:[a-z0-9][a-z0-9-]{1,30}[a-z0-9]|[1-9][0-9]{0,8})$")   # names 3..32, or a canonical number
 
 
 def code():
@@ -87,6 +87,14 @@ def build_pending(c, now=None):
             continue
         out.append({"id": r["id"], "name": r["city_name"], "wallet": r["wallet"], "expires": now + TERM_S,
                     "body_boc": base64.b64encode(body.to_boc()).decode(), "body_hash": body.hash.hex()})
+    import citynum as NUM   # B10b: numbered addresses, canonical label only (no leading zeros on chain)
+    for r in NUM.pending(c, now):
+        try:
+            body = set_body(str(r["n"]), r["wallet"], now + TERM_S)
+        except Exception:  # noqa: BLE001
+            continue
+        out.append({"number": r["n"], "name": str(r["n"]), "wallet": r["wallet"], "expires": now + TERM_S,
+                    "body_boc": base64.b64encode(body.to_boc()).decode(), "body_hash": body.hash.hex()})
     return out
 
 
@@ -124,8 +132,15 @@ def setup(app, db):
     @app.get("/v1/city/{name}")
     def city_name(name: str):
         name = name.lower().removesuffix("." + PARENT)
+        import citynum as NUM
         with db() as c:
             migrate(c)
+            nrow = NUM.resolve(c, name)
+            if nrow:
+                v = NUM.view(nrow)
+                return {"name": v["address"], "number": v["number"], "agent_id": v["agent_id"], "wallet": v["wallet"], "on_chain": v["on_chain"],
+                        "expires": v["expires"], "live": bool(CONTRACT), "dns_query_hex": dns_query(str(v["number"])).hex(),
+                        "category_wallet": hex(wallet_category()), "note": "leading zeros are dropped; on chain the canonical label is registered"}
             r = c.execute("SELECT id, wallet, city_registered, city_expires FROM passports WHERE city_name=?", (name,)).fetchone()
         if not r:
             raise HTTPException(404, "no such name in the city")
@@ -163,7 +178,10 @@ def main(argv):
         st, d = anchor.http("POST", api + "/api/v2/sendBoc", {"boc": base64.b64encode(msg.to_boc()).decode()})
         print("sent" if st == 200 else f"send failed {st}: {str(d)[:200]}")
         if st == 200:
-            c.execute("UPDATE passports SET city_registered=1, city_expires=? WHERE id=?", (item["expires"], item["id"]))
+            if item.get("number"):
+                c.execute("UPDATE numbers SET city_registered=1, city_expires=? WHERE n=?", (item["expires"], item["number"]))
+            else:
+                c.execute("UPDATE passports SET city_registered=1, city_expires=? WHERE id=?", (item["expires"], item["id"]))
             c.commit()
             time.sleep(3)
     return 0

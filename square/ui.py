@@ -9,13 +9,14 @@ horizontal scroll). Two ways in:
 Author: Aleksandr Shcherbakov (@miinimal) - MINIMALCULT.
 """
 import html
+import os
 import re
 
 from fastapi.responses import HTMLResponse
 
 NAV = [("/live", "Live"), ("/registry", "Agents"), ("/square", "Square"), ("/board", "Work"), ("/grants", "Grants"),
        ("/districts", "Districts"), ("/treasury", "Treasury"), ("/encyclopedia", "Encyclopedia"),
-       ("/roadmap", "Roadmap"), ("/developers", "Developers"), ("/for-agents", "For agents")]
+       ("/roadmap", "Roadmap"), ("/docs", "Docs"), ("/developers", "Developers"), ("/for-agents", "For agents")]
 
 TOKENS = ("--bg:#0c0c0e;--fg:#f2f2f0;--mut:#a3a3a8;--card:#16161a;--line:#2a2a30;--acc:#e8c26a;--ok:#7bd389;"
           "--link:#e8c26a")
@@ -50,8 +51,10 @@ blockquote{border-left:3px solid var(--acc)!important;margin:6px 0;padding:4px 1
 .ok{color:var(--ok)}img{max-width:100%%}
 </style>""" % TOKENS
 
-FOOT = ("<footer class=ui-f>MINIMAL AI — an open world for AI agents on TON. Every number links to its source. "
-        "<a href='https://github.com/miinimal/minimalai-core'>Open core</a> · <a href='/for-agents'>Agents start here</a> · "
+GITHUB = os.environ.get("GITHUB_ORG_URL", "https://github.com/miinimal")   # the organisation page once the owner creates it
+FOOT = ("<footer class=ui-f><a href='https://minimalcult.org/' style='text-decoration:none'><img src='/brand/mark-gold.svg' alt='' width=18 height=18 style='vertical-align:-4px;margin-right:6px'>MINIMALCULT</a> · "
+        "MINIMAL AI — an open world for AI agents on TON. Every number links to its source. "
+        f"<a href='{GITHUB}'>GitHub</a> · <a href='https://github.com/miinimal/minimalai-core'>Open core</a> · <a href='/brand'>Brand</a> · <a href='/for-agents'>Agents start here</a> · "
         "<a href='/merit'>Merit</a> · <a href='/contributions'>Contributions</a> · <a href='/roadmap'>Roadmap</a></footer>")
 
 
@@ -60,7 +63,7 @@ def header(path=""):
     alias = {"/agent": "/registry", "/agents": "/registry", "/contributions": "/registry", "/merit": "/registry"}
     sect = alias.get(sect, sect)
     links = "".join(f"<a href='{p}'{' class=on' if p == sect else ''}>{t}</a>" for p, t in NAV)
-    return (f"<header class=ui-h><div><a class=ui-b href='/'>MINIMAL<i>·</i>AI</a><nav class=ui-n aria-label=Sections>{links}</nav>"
+    return (f"<header class=ui-h><div><a class=ui-b href='/'><img src='/brand/mark-gold.svg' alt='' width=20 height=20 style='vertical-align:-5px;margin-right:8px'>MINIMAL AI</a><nav class=ui-n aria-label=Sections>{links}</nav>"
             "</div></header>")
 
 
@@ -74,7 +77,7 @@ def page(title, path, body, desc="", head_extra=""):
     e = html.escape
     return (f'<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">'
             f"<title>{e(title)} — MINIMAL AI</title><meta name=\"description\" content=\"{e(desc or title)}\">"
-            f"<meta name=theme-color content='#0c0c0e'><meta property=og:image content='https://ai.minimalcult.org/og.png'>"
+            f"<meta name=theme-color content='#0c0c0e'><link rel=icon href='/favicon.ico'><link rel=icon type=image/svg+xml href='/brand/mark-gold-on-dark.svg'><meta property=og:image content='https://ai.minimalcult.org/brand-og.png'>"
             f"{head_extra}{CSS}</head><body>{header(path)}<main class=ui-m>{body}</main>{FOOT}</body></html>")
 
 
@@ -91,6 +94,8 @@ def wrap(doc, path):
         doc = CSS + doc
     m = _BODY.search(doc)
     hdr = header(path)
+    if "rel=icon" not in doc and "rel=\"icon\"" not in doc and re.search(r"</head>", doc, re.I):
+        doc = re.sub(r"</head>", lambda _: "<link rel=icon href='/favicon.ico'></head>", doc, count=1, flags=re.I)
     hdr += "<div class=ui-m>"
     doc = doc[:m.end()] + hdr + doc[m.end():] if m else doc + hdr
     tail = "</div>" + FOOT
@@ -104,6 +109,8 @@ def not_found(what, back="/registry", label="Browse agents", status=404):
 
 
 HUMAN_404 = {"/agent/": ("No agent with this name or id lives here.", "/registry", "Browse agents"),
+             "/docs/": ("There is no document at this address.", "/docs", "All documents"),
+             "/a/": ("No agent holds this number yet.", "/registry", "Browse agents"),
              "/square": ("This section or thread does not exist on the square.", "/square", "Back to the square")}
 SKIP_HOSTS = {"minimalcult.org", "www.minimalcult.org"}  # the studio portfolio keeps its own look
 

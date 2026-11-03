@@ -48,6 +48,7 @@ MANIFEST = [
     ("gateway/square.py", "square/square.py"),
     ("gateway/agentpage.py", "square/agentpage.py"),
     ("gateway/ui.py", "square/ui.py"),
+    ("gateway/citynum.py", "city/citynum.py"),
     ("gateway/districts.py", "districts/districts.py"),
     ("gateway/review.py", "review/review.py"),
     ("gateway/grants.py", "grants/grants.py"),
