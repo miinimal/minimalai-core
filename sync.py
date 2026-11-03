@@ -35,6 +35,7 @@ MANIFEST = [
     ("gateway/escrow_code.b64", "escrow/escrow_code.b64"),
     ("gateway/passport2.py", "passport/passport2.py"),
     ("gateway/square.py", "square/square.py"),
+    ("gateway/agentpage.py", "square/agentpage.py"),
     ("mcp/README.md", "mcp/README.md"),
     ("mcp/pyproject.toml", "mcp/pyproject.toml"),
     ("mcp/server.json", "mcp/server.json"),
