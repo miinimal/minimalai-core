@@ -165,32 +165,31 @@ def setup(app, db, get_key, append):
             load(c, did)
             return view(c, did)
 
-    def on_owner_resolved(c, did):
-        """Called by disputes.resolve: an open jury is dissolved, stakes and the fee go back."""
-        a = c.execute("SELECT * FROM arbitrations WHERE dispute_id=? AND status='open'", (did,)).fetchone()
-        if not a:
-            return
-        now = int(time.time())
-        for j in c.execute("SELECT * FROM arbitration_jurors WHERE dispute_id=?", (did,)).fetchall():
-            holds.give(c, j["key_hash"], j["stake_nano"], j["stake_w"])
+
+def on_owner_resolved(c, did):
+    """Called by disputes.resolve: an open jury is dissolved, stakes and the fee go back."""
+    a = c.execute("SELECT * FROM arbitrations WHERE dispute_id=? AND status='open'", (did,)).fetchone()
+    if not a:
+        return
+    now = int(time.time())
+    for j in c.execute("SELECT * FROM arbitration_jurors WHERE dispute_id=?", (did,)).fetchall():
+        holds.give(c, j["key_hash"], j["stake_nano"], j["stake_w"])
+    holds.give(c, a["requester"], a["fee_nano"], a["fee_w"])
+    c.execute("INSERT INTO ledger(ts,key_hash,delta_nano,reason) VALUES(?,?,?,?)", (now, a["requester"], a["fee_nano"], f"arbitration_refund:{did}"))
+    c.execute("UPDATE arbitrations SET status='dissolved', decided_ts=? WHERE dispute_id=?", (now, did))
+
+def expire(c, now=None):
+    """Jury filled but silent past TTL: silent jurors lose the stake, voters get theirs back, fee refunded, back to the owner."""
+    now = now or int(time.time())
+    n = 0
+    for a in c.execute("SELECT * FROM arbitrations WHERE status='open' AND filled_ts IS NOT NULL AND filled_ts<?", (now - TTL_S,)).fetchall():
+        for j in c.execute("SELECT * FROM arbitration_jurors WHERE dispute_id=?", (a["dispute_id"],)).fetchall():
+            if j["outcome"]:
+                holds.give(c, j["key_hash"], j["stake_nano"], j["stake_w"])
+            else:
+                c.execute("INSERT INTO ledger(ts,key_hash,delta_nano,reason) VALUES(?,?,?,?)", (now, "treasury", j["stake_nano"], f"split:silent_juror:{a['dispute_id']}"))
         holds.give(c, a["requester"], a["fee_nano"], a["fee_w"])
-        c.execute("INSERT INTO ledger(ts,key_hash,delta_nano,reason) VALUES(?,?,?,?)", (now, a["requester"], a["fee_nano"], f"arbitration_refund:{did}"))
-        c.execute("UPDATE arbitrations SET status='dissolved', decided_ts=? WHERE dispute_id=?", (now, did))
+        c.execute("UPDATE arbitrations SET status='expired', decided_ts=? WHERE dispute_id=?", (now, a["dispute_id"]))
+        n += 1
+    return n
 
-    def expire(c, now=None):
-        """Jury filled but silent past TTL: silent jurors lose the stake, voters get theirs back, fee refunded, back to the owner."""
-        now = now or int(time.time())
-        n = 0
-        for a in c.execute("SELECT * FROM arbitrations WHERE status='open' AND filled_ts IS NOT NULL AND filled_ts<?", (now - TTL_S,)).fetchall():
-            for j in c.execute("SELECT * FROM arbitration_jurors WHERE dispute_id=?", (a["dispute_id"],)).fetchall():
-                if j["outcome"]:
-                    holds.give(c, j["key_hash"], j["stake_nano"], j["stake_w"])
-                else:
-                    c.execute("INSERT INTO ledger(ts,key_hash,delta_nano,reason) VALUES(?,?,?,?)", (now, "treasury", j["stake_nano"], f"split:silent_juror:{a['dispute_id']}"))
-            holds.give(c, a["requester"], a["fee_nano"], a["fee_w"])
-            c.execute("UPDATE arbitrations SET status='expired', decided_ts=? WHERE dispute_id=?", (now, a["dispute_id"]))
-            n += 1
-        return n
-
-    setup.on_owner_resolved = on_owner_resolved
-    setup.expire = expire
