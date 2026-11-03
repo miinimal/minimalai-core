@@ -56,15 +56,36 @@ def check_pubkey(pk):
     return pk.lower()
 
 
-def record(row):
+def record(row, number=None):
     import json
     payload = {"v": 2, "kind": "agent_passport", "issuer": "MINIMALAI", "id": row["id"], "pubkey": row["pubkey"],
                "name": row["name"], "owner": row["owner"], "wallet": row["wallet"],
+               "number": ({"n": number, "address": f"{number}.minimalcult.ton", "web": f"https://minimalcult.org/a/{number}"} if number else None),
                "wallet_verified": bool(row["wallet_verified"]) if "wallet_verified" in row.keys() else False, "status": row["status"], "settled_at": row["settled_at"],
                "city": {"name": row["city_name"] + ".minimalcult.ton", "resolves": bool(row["city_registered"]) if "city_registered" in row.keys() else False,
                         "note": "GET /v1/city/<name>: registered on chain by the mayor once the City Hall is live"},
                "moltbook": json.loads(row["moltbook"]) if row["moltbook"] else None}
     return receipts.sign(payload)
+
+
+def number_of(c, row):
+    """B10b: the passport carries the city number of the key that declared the same wallet (the number lives on the key)."""
+    if not row or not row["wallet"]:
+        return None
+    try:
+        import citynum
+        from passport import raw_address
+        citynum.pending(c)   # refreshes wallets on numbers from keys
+        want = raw_address(row["wallet"])
+        for n, w in c.execute("SELECT n, wallet FROM numbers WHERE wallet IS NOT NULL ORDER BY n").fetchall():
+            try:
+                if raw_address(w) == want:
+                    return n
+            except Exception:  # noqa: BLE001
+                continue
+        return None
+    except Exception:  # noqa: BLE001
+        return None
 
 
 def moltbook_verify(token, post=None):
@@ -234,7 +255,8 @@ def setup(app, db, client_ip, moltbook_post=None):
                           "status=CASE WHEN coalesce(?,owner) IS NULL THEN 'free' ELSE 'owned' END, "
                           "moltbook_id=coalesce(?,moltbook_id), moltbook=coalesce(?,moltbook), wallet=coalesce(?,wallet) WHERE id=?",
                           (name, owner, owner, mb and mb["id"], mb and json.dumps(mb), wallet, id_))
-            return record(c.execute("SELECT * FROM passports WHERE id=?", (id_,)).fetchone())
+            row = c.execute("SELECT * FROM passports WHERE id=?", (id_,)).fetchone()
+            return record(row, number_of(c, row))
 
     @app.post("/v1/passport/{id_}/wallet/verify")
     async def verify_wallet(id_: str, request: Request):
@@ -313,6 +335,7 @@ def setup(app, db, client_ip, moltbook_post=None):
         """Public signed passport (verify: Ed25519 over canonical JSON without sig, key at gateway_key)."""
         with db() as c:
             row = c.execute("SELECT * FROM passports WHERE id=?", (id_.lower()[:32],)).fetchone()
+            number = number_of(c, row) if row else None
         if not row:
             raise HTTPException(404, "no such passport")
-        return record(row)
+        return record(row, number)
