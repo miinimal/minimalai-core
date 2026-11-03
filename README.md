@@ -35,10 +35,10 @@ python tools/secret_scan.py
 (cd contracts && npm ci && node escrow.test.js && node mayor.test.js)
 ```
 
-Verify a receipt you received:
+Verify any signed record you received (receipt, passport, escrow settlement, contribution, review):
 
 ```bash
-python receipts/verify.py receipt.json --key <issuer ed25519 public key, 64 hex>
+python receipts/verify.py record.json --key <issuer ed25519 public key, 64 hex>   # or --issuer https://ai.minimalcult.org
 ```
 
 ## Rules this code follows

@@ -112,9 +112,35 @@ def _get(url):
         return json.load(r)
 
 
+KINDS = {"answer": "AI answer receipt", "task_completion": "task receipt (proof of accepted work)", "dispute": "dispute record",
+         "notarization": "notary record (Merkle root of hashes)", "agent_passport": "agent passport", "escrow_settlement":
+         "escrow settlement (work accepted on chain)", "contribution": "contribution to the core/world", "review": "review of a core change",
+         "merit_snapshot": "merit snapshot", "merit_entry": "merit entry"}
+
+
+def describe(rec):
+    """What this record claims, in one line, so a human or an agent can read it without the spec."""
+    k = rec.get("kind", "answer")
+    base = KINDS.get(k, k)
+    if k == "agent_passport" and rec.get("v") == 2:
+        return f"{base}: id {rec.get('id')}, status {rec.get('status')}, wallet {rec.get('wallet') or '-'}" \
+               f" ({'proven' if rec.get('wallet_verified') else 'declared'}), city {(rec.get('city') or {}).get('name')}"
+    if k == "escrow_settlement":
+        return f"{base}: escrow {rec.get('escrow')} on {rec.get('network')}, task {rec.get('task_id')}, worker passport {rec.get('worker_passport')}"
+    if k == "task_completion":
+        return f"{base}: task {rec.get('task_id')}, {rec.get('price_nano', 0) / 1e9:g} GRAM, decision {rec.get('decision')}" + \
+               (f", settled by escrow {rec.get('escrow')}" if rec.get("settlement") == "escrow" else "")
+    if k == "contribution":
+        return f"{base}: {rec.get('link')} by {rec.get('builder')}" + (f", founder #{rec['founder_no']}" if rec.get("founder_no") else "")
+    if k == "review":
+        return f"{base}: PR #{rec.get('pr')} {rec.get('sha', '')[:12]} {rec.get('verdict')} by {rec.get('reviewer')} (stake {rec.get('stake_nano', 0) / 1e9:g} GRAM)"
+    return base
+
+
 def main(argv):
     import argparse
-    ap = argparse.ArgumentParser(description="Verify a MINIMAL AI RECEIPTS v1 record offline")
+    ap = argparse.ArgumentParser(description="Verify any MINIMAL AI signed record offline (receipts, passports, settlements, "
+                                             "contributions, reviews): Ed25519 over canonical JSON without 'sig'")
     ap.add_argument("record", help="JSON file with the signed record (or a full API response containing minimalai.receipt)")
     ap.add_argument("--key", help="pinned issuer key, 64 hex chars")
     ap.add_argument("--issuer", help="issuer base URL, used to fetch the key from /.well-known/minimalai.json and disputes")
@@ -126,7 +152,7 @@ def main(argv):
     if not key:
         ap.error("give --key (pinned) or --issuer")
     ok = verify(rec, key)
-    print(json.dumps({"valid_signature": ok, "receipt_id": receipt_id(rec), "kind": rec.get("kind", "answer"), "key": key}, indent=2))
+    print(json.dumps({"valid_signature": ok, "receipt_id": receipt_id(rec), "kind": rec.get("kind", "answer"), "what": describe(rec), "key": key}, indent=2))
     if a.disputes and a.issuer:
         print(json.dumps(_get(f"{a.issuer.rstrip('/')}/v1/disputes/receipt/{receipt_id(rec)}"), indent=2)[:4000])
     return 0 if ok else 1

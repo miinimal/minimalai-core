@@ -76,3 +76,20 @@ def test_district_template_manifest():
     import app as district
     m = district.manifest()
     assert m["kind"] == "service" and m["no_custody"] is True and m["sanctions_screening"] is True
+
+
+def test_verify_cli_reads_every_record_kind(tmp_path):
+    """One verifier for passports, settlements, contributions and reviews: same signature rule as receipts."""
+    import json, subprocess
+    key = issuer.public_key_hex()
+    recs = [issuer.sign({"v": 2, "kind": "agent_passport", "id": "ab" * 16, "status": "free", "wallet": None, "city": {"name": "x.minimalcult.ton"}}),
+            issuer.sign({"v": 1, "kind": "escrow_settlement", "escrow": "0:ff", "network": "testnet", "task_id": 7, "worker_passport": "ab" * 16}),
+            issuer.sign({"v": 1, "kind": "contribution", "link": "https://github.com/x/y/pull/1", "builder": "cd" * 16, "founder_no": 3}),
+            issuer.sign({"v": 1, "kind": "review", "pr": 12, "sha": "e" * 40, "verdict": "approve", "reviewer": "ef" * 16, "stake_nano": 10**9})]
+    for r in recs:
+        f = tmp_path / "r.json"; f.write_text(json.dumps(r))
+        out = subprocess.run([sys.executable, os.path.join(CORE, "receipts", "verify.py"), str(f), "--key", key], capture_output=True, text=True)
+        d = json.loads(out.stdout)
+        assert out.returncode == 0 and d["valid_signature"] and d["kind"] == r["kind"] and d["what"], (r["kind"], out.stderr)
+        bad = dict(r); bad["kind"] = "forged"; f.write_text(json.dumps(bad))
+        assert subprocess.run([sys.executable, os.path.join(CORE, "receipts", "verify.py"), str(f), "--key", key], capture_output=True).returncode == 1
