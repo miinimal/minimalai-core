@@ -25,7 +25,7 @@ jobs:
         with:
           node-version: "22"
       - run: npm ci
-      - run: node escrow.test.js && node mayor.test.js
+      - run: node escrow.test.js && node mayor.test.js && node stake.test.js
   gitleaks:
     runs-on: ubuntu-latest
     steps:

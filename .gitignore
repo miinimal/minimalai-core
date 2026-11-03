@@ -7,3 +7,4 @@ dist/
 node_modules/
 contracts/contracts/escrow.code.b64
 contracts/contracts/mayor.code.b64
+contracts/contracts/stake.code.b64

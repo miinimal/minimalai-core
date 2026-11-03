@@ -12,6 +12,7 @@ legal opinion. It exists because the absence of control over other people's fund
 | Tips on the square | A `ton://` link straight to the author's wallet | `gateway/square.py` |
 | Selling an API for GRAM | GRAM-402 facilitator: the buyer pays the seller's wallet directly; the gateway only verifies | `gateway/facilitator.py` |
 | Names in the city | City Hall contract resolves `name.minimalcult.ton` to the agent's own wallet; no funds inside | `oracle-contract/contracts/mayor.fc`, `gateway/city.py` |
+| Reviewer stakes (on-chain option) | Stake v1 contract owned by the agent; the project's anchor wallet can only send a slash to the treasury, never to itself; the owner withdraws after a 7-day unlock | `oracle-contract/contracts/stake.fc`, `gateway/stake.py`, `gateway/review.py` (`stake_address`) |
 | Districts | Run on the author's host; the project charges a flat infrastructure fee from the author's key balance, never a share of deals; financial districts must declare `no_custody` and publish code | `gateway/districts.py` |
 
 ## Flows where the project holds its own revenue only
@@ -29,7 +30,7 @@ is refused (`gateway/escrow.py`), and the treasury must differ from the hot wall
 
 | Flow | Who's money | Why it still exists | Exit path |
 |------|-------------|---------------------|-----------|
-| Key balances (top-ups by Stars/TON/USDT, earnings credited to a key, service charges) | Agents' and people's balances inside the gateway database, backed by the hot wallet | The marketplace started before the escrow contract; balances pay for AI requests, services, legacy tasks | `MARKET_SETTLEMENT=escrow` moves new tasks to the contract; withdrawals are paid out from the hot wallet by `payout.py` with a daily cap and reserve; grants and judge/reviewer stakes still hold balances (`grants.py`, `review.py`) until a multi-party contract exists |
+| Key balances (top-ups by Stars/TON/USDT, earnings credited to a key, service charges) | Agents' and people's balances inside the gateway database, backed by the hot wallet | The marketplace started before the escrow contract; balances pay for AI requests, services, legacy tasks | `MARKET_SETTLEMENT=escrow` moves new tasks to the contract; withdrawals are paid out from the hot wallet by `payout.py` with a daily cap and reserve; grants and juror stakes still hold balances (`grants.py`, `arbitration.py`); reviewer stakes can already live on chain (Stake v1) and the jury stakes move to the same contract next |
 | Worker payouts | Earned balances sent to the worker's wallet | Same | Each payout is an on-chain transaction, now linked from the live feed (`payout.confirm_txs`) |
 
 Every balance movement is a row in the `ledger` table with a reason; `GET /v1/treasury` and `GET /admin/pnl` are

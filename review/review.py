@@ -34,7 +34,8 @@ APPROVALS = 2
 FINDER_SHARE = 0.5
 CI_CACHE_S = 120
 SCHEMA = """
-CREATE TABLE IF NOT EXISTS reviewers(key_hash TEXT PRIMARY KEY, stake_nano INTEGER, stake_w INTEGER, since INTEGER, blocked INTEGER DEFAULT 0);
+CREATE TABLE IF NOT EXISTS reviewers(key_hash TEXT PRIMARY KEY, stake_nano INTEGER, stake_w INTEGER, since INTEGER, blocked INTEGER DEFAULT 0,
+    stake_address TEXT);
 CREATE TABLE IF NOT EXISTS changes(id INTEGER PRIMARY KEY, ts INTEGER, author TEXT, pr INTEGER, sha TEXT, summary TEXT,
     status TEXT DEFAULT 'open', ci TEXT, ci_ts INTEGER, decided_ts INTEGER, note TEXT, UNIQUE(pr, sha));
 CREATE TABLE IF NOT EXISTS reviews(change_id INTEGER, key_hash TEXT, verdict TEXT, note TEXT, ts INTEGER, sha256 TEXT, body TEXT,
@@ -95,9 +96,30 @@ def setup(app, db, get_key, admin, tell_owner, fetch=None):
             tell_owner(f"🔍 Отдел проверки: PR #{row['pr']} ядра прошёл тесты и {n} ревью с залогом.\n\n{row['summary'][:600]}\n\n"
                        f"https://github.com/{REPO}/pull/{row['pr']}", [("✅ Слить", f"rv:m:{cid}"), ("✖ Отклонить", f"rv:r:{cid}")])
 
+    with db() as c:
+        if "stake_address" not in [r[1] for r in c.execute("PRAGMA table_info(reviewers)")]:
+            c.execute("ALTER TABLE reviewers ADD COLUMN stake_address TEXT")
+
     @app.post("/v1/review/stake")
     async def stake(request: Request, authorization: str = Header(None)):
+        """Stake from your balance {"nano"} or, non-custodially, present your Stake v1 contract {"stake_address"} (B17):
+        it must be the contract for your key's wallet with purpose 1, locked and funded with >= STAKE_NANO."""
         key = get_key(authorization); b = await request.json()
+        if b.get("stake_address"):
+            import stake as STK
+            wallet = key["owner"] or ""
+            ok, info = STK.verify_stake(str(b["stake_address"]), wallet, 1, STAKE_NANO)
+            if not ok:
+                raise HTTPException(422, f"stake contract not accepted: {info}")
+            with db() as c:
+                r = c.execute("SELECT * FROM reviewers WHERE key_hash=?", (key["key_hash"],)).fetchone()
+                if r and r["blocked"]:
+                    raise HTTPException(403, "this key is blocked from reviewing")
+                c.execute("INSERT INTO reviewers(key_hash,stake_nano,stake_w,since,stake_address) VALUES(?,?,0,?,?) ON CONFLICT(key_hash) DO UPDATE SET "
+                          "stake_address=excluded.stake_address, stake_nano=max(reviewers.stake_nano, excluded.stake_nano)",
+                          (key["key_hash"], info["balance_nano"], int(time.time()), str(b["stake_address"])))
+            return {"reviewer": receipts.pseudonym("key:" + key["key_hash"]), "stake_nano": info["balance_nano"], "stake_address": b["stake_address"],
+                    "custody": "none: the stake stays in your contract; only a slash to the treasury can move it"}
         try:
             nano = int(b.get("nano") or STAKE_NANO)
         except (TypeError, ValueError):
@@ -131,6 +153,9 @@ def setup(app, db, get_key, admin, tell_owner, fetch=None):
             if c.execute("SELECT 1 FROM reviews rv JOIN changes ch ON ch.id=rv.change_id WHERE rv.key_hash=? AND rv.verdict='approve' "
                          "AND ch.status IN ('open','ready')", (key["key_hash"],)).fetchone():
                 raise HTTPException(409, "you have approvals on changes still under decision")
+            if r["stake_address"]:
+                c.execute("DELETE FROM reviewers WHERE key_hash=?", (key["key_hash"],))
+                return {"returned_nano": 0, "note": "on-chain stake: unlock and withdraw it from your contract yourself"}
             holds.give(c, key["key_hash"], r["stake_nano"], r["stake_w"])
             c.execute("DELETE FROM reviewers WHERE key_hash=?", (key["key_hash"],))
             c.execute("INSERT INTO ledger(ts,key_hash,delta_nano,reason) VALUES(?,?,?,?)", (int(time.time()), key["key_hash"], r["stake_nano"], "review_unstake"))
@@ -258,8 +283,12 @@ def setup(app, db, get_key, admin, tell_owner, fetch=None):
             guilty = [row["author"]] + [r[0] for r in c.execute("SELECT key_hash FROM reviews WHERE change_id=? AND verdict='approve'", (cid,)).fetchall()]
             burned = 0
             for kh in dict.fromkeys(guilty):
-                rv = c.execute("SELECT stake_nano FROM reviewers WHERE key_hash=?", (kh,)).fetchone()
-                if rv and rv["stake_nano"]:
+                rv = c.execute("SELECT stake_nano, stake_address FROM reviewers WHERE key_hash=?", (kh,)).fetchone()
+                if rv and rv["stake_nano"] and rv["stake_address"]:      # B17: on-chain stake -> the anchor wallet sends op::slash
+                    import stake as STK
+                    STK.queue_slash(c, rv["stake_address"], rv["stake_nano"], f"review slash #{cid}: {reason}")
+                    burned += rv["stake_nano"]
+                elif rv and rv["stake_nano"]:
                     burned += rv["stake_nano"]
                     c.execute("INSERT INTO ledger(ts,key_hash,delta_nano,reason) VALUES(?,?,?,?)", (now, "treasury", rv["stake_nano"], f"split:review_slash:{cid}"))
                 c.execute("INSERT INTO reviewers(key_hash,stake_nano,stake_w,since,blocked) VALUES(?,0,0,?,1) ON CONFLICT(key_hash) DO UPDATE SET "
