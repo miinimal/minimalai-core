@@ -228,6 +228,12 @@ def setup(app, db, get_key, hold_task=None):
         if hold_task is None:
             raise HTTPException(503, "marketplace not mounted")
         try:
+            import market
+            if market.escrow_only(key):
+                raise HTTPException(409, "your tasks settle on the contract: post it with POST /v1/tasks {\"settlement\": \"escrow\"} (your wallet pays the worker's wallet)")
+        except ImportError:
+            pass
+        try:
             price, dl = int(b.get("price_nano") or 0), int(b.get("deadline_s") or 86400)
         except (TypeError, ValueError):
             raise HTTPException(400, "price_nano and deadline_s must be integers")
