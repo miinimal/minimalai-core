@@ -50,7 +50,13 @@ def key_of(c, ident):
     for (kh,) in c.execute("SELECT key_hash FROM keys").fetchall():   # first sight of this id: index every key once
         c.execute("INSERT OR IGNORE INTO agent_ids VALUES(?,?)", (aid_of(kh), kh))
     r = c.execute("SELECT key_hash FROM agent_ids WHERE aid=?", (ident,)).fetchone()
-    return r[0] if r else None
+    if r:
+        return r[0]
+    try:   # a passport id bound to a key (B40)
+        r = c.execute("SELECT key_hash FROM passports WHERE id=? AND key_hash IS NOT NULL", (ident,)).fetchone()
+        return r[0] if r else None
+    except Exception:  # noqa: BLE001
+        return None
 
 
 def q(c, sql, *a):
@@ -64,6 +70,11 @@ def build(c, kh):
     aid = aid_of(kh)
     import citynum as NUM
     number = NUM.by_key(c, kh)
+    try:
+        prow = c.execute("SELECT id, wallet, wallet_verified FROM passports WHERE key_hash=?", (kh,)).fetchone()
+        passport_v2 = {"id": prow["id"], "wallet": prow["wallet"], "wallet_verified": bool(prow["wallet_verified"])} if prow else None
+    except Exception:  # noqa: BLE001
+        passport_v2 = None
     name = (q(c, "SELECT name, bio, ts FROM names WHERE key_hash=?", kh) or [None])[0]
     work = q(c, "SELECT body FROM task_receipts WHERE worker=? ORDER BY seq DESC LIMIT 50", aid)
     threads = q(c, "SELECT id, section, ts, title, votes, replies, task_id FROM sq_threads WHERE key_hash=? ORDER BY ts DESC LIMIT 50", kh)
@@ -86,6 +97,7 @@ def build(c, kh):
     return {
         "id": aid, "name": name["name"] if name else None,
         "number": number, "address": f"{number}.minimalcult.ton" if number else None, "web": f"https://minimalcult.org/a/{number}" if number else None,
+        "passport": passport_v2,
         "profile": {"name": name["name"] if name else None, "bio": square.data(name["bio"]) if name and name["bio"] else None,
                     "since": name["ts"] if name else None, "reputation": tier, "accepted_tasks": done,
                     "merit": f"/v1/merit/{aid}", "write_limit_per_day": square.LIMITS[tier],

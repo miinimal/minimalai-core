@@ -61,6 +61,7 @@ def record(row, number=None):
     payload = {"v": 2, "kind": "agent_passport", "issuer": "MINIMALAI", "id": row["id"], "pubkey": row["pubkey"],
                "name": row["name"], "owner": row["owner"], "wallet": row["wallet"],
                "number": ({"n": number, "address": f"{number}.minimalcult.ton", "web": f"https://minimalcult.org/a/{number}"} if number else None),
+               "agent_id": (__import__("agentpage").aid_of(row["key_hash"]) if "key_hash" in row.keys() and row["key_hash"] else None),
                "wallet_verified": bool(row["wallet_verified"]) if "wallet_verified" in row.keys() else False, "status": row["status"], "settled_at": row["settled_at"],
                "city": {"name": row["city_name"] + ".minimalcult.ton", "resolves": bool(row["city_registered"]) if "city_registered" in row.keys() else False,
                         "note": "GET /v1/city/<name>: registered on chain by the mayor once the City Hall is live"},
@@ -69,11 +70,17 @@ def record(row, number=None):
 
 
 def number_of(c, row):
-    """B10b: the passport carries the city number of the key that declared the same wallet (the number lives on the key)."""
-    if not row or not row["wallet"]:
+    """B10b: the passport carries the city number of its bound key, or of the key that declared the same wallet."""
+    if not row:
         return None
     try:
         import citynum
+        if "key_hash" in row.keys() and row["key_hash"]:
+            n = citynum.by_key(c, row["key_hash"])
+            if n:
+                return n
+        if not row["wallet"]:
+            return None
         from passport import raw_address
         citynum.pending(c)   # refreshes wallets on numbers from keys
         want = raw_address(row["wallet"])
@@ -329,6 +336,35 @@ def setup(app, db, client_ip, moltbook_post=None):
                 raise HTTPException(403, "the proof is for another wallet than the one declared on this passport")
             c.execute("UPDATE passports SET wallet=?, wallet_verified=coalesce(wallet_verified, ?) WHERE id=?", (addr, int(time.time()), id_))
         return {"id": id_, "wallet": addr, "verified": True, "method": "ton_proof"}
+
+    @app.post("/v1/passport/{id_}/bind")
+    async def bind_key(id_: str, request: Request):
+        """B10b/B40 one identity: bind an API key (Bearer) to this passport. The passport key signs
+        `minimalai-bind:<passport id>:<agent id of the key>` (base64 in "sig"); after that the key's city number, page and
+        receipts belong to the passport, and the passport appears on the agent page. One key per passport, one passport per key."""
+        import app as G
+        key = G.get_key(request.headers.get("authorization"))
+        b = await request.json()
+        id_ = id_.lower()[:32]
+        with db() as c:
+            row = c.execute("SELECT * FROM passports WHERE id=?", (id_,)).fetchone()
+            if not row:
+                raise HTTPException(404, "no such passport")
+            import agentpage
+            aid = agentpage.aid_of(key["key_hash"])
+            try:
+                Ed25519PublicKey.from_public_bytes(bytes.fromhex(row["pubkey"])).verify(
+                    base64.b64decode(str(b.get("sig") or "")), f"minimalai-bind:{id_}:{aid}".encode())
+            except Exception:  # noqa: BLE001
+                raise HTTPException(401, "signature does not verify: sign 'minimalai-bind:<passport id>:<agent id>' with the passport key")
+            if "key_hash" not in [r[1] for r in c.execute("PRAGMA table_info(passports)")]:
+                c.execute("ALTER TABLE passports ADD COLUMN key_hash TEXT")
+            other = c.execute("SELECT id FROM passports WHERE key_hash=? AND id!=?", (key["key_hash"], id_)).fetchone()
+            if other:
+                raise HTTPException(409, f"this key is already bound to passport {other[0]}")
+            c.execute("UPDATE passports SET key_hash=? WHERE id=?", (key["key_hash"], id_))
+            row = c.execute("SELECT * FROM passports WHERE id=?", (id_,)).fetchone()
+            return {"passport": id_, "agent_id": aid, "number": number_of(c, row), "bound": True}
 
     @app.get("/v1/passport/{id_}")
     def get_passport(id_: str):
