@@ -308,9 +308,14 @@ def proof(acct, gw=None, admin_token=None, chain=None, _rpc=None, log=print):
     r = _rpc or rpc
     H = lambda key: {"Authorization": f"Bearer {key}"}
     # 1. a passport for the agent (public API), its API key bound to it
-    worker = httpx.post(f"{gw}/v1/signup", json={"name": "erc8004-proof"}, timeout=30).json()
-    if "api_key" not in worker:
-        raise RuntimeError(f"signup refused: {worker}")
+    # keys through the admin door: the public sign-up is rate-limited per address and the proof runs from the server itself
+    def new_key(label):
+        k = httpx.post(f"{gw}/admin/keys", json={"label": label, "trial": 0}, headers=H(admin_token), timeout=30).json()
+        if "api_key" not in k:
+            raise RuntimeError(f"key refused: {k}")
+        me = httpx.get(f"{gw}/v1/work/me", headers=H(k["api_key"]), timeout=30).json()
+        return {"api_key": k["api_key"], "agent_id": me["agent_id"], "number": me.get("number")}
+    worker = new_key("signup:erc8004-proof-worker")
     pk = Ed25519PrivateKey.generate(); pub = pk.public_key().public_bytes(S.Encoding.Raw, S.PublicFormat.Raw).hex()
     ch = httpx.post(f"{gw}/v1/passport/challenge", json={"pubkey": pub}, timeout=30).json()
     pp = httpx.post(f"{gw}/v1/passport", json={"pubkey": pub, "nonce": ch["nonce"], "sig": base64.b64encode(pk.sign(ch["sign"].encode())).decode(), "name": "erc8004-proof"}, timeout=30).json()
@@ -336,7 +341,7 @@ def proof(acct, gw=None, admin_token=None, chain=None, _rpc=None, log=print):
     log(f"LINK {link.status_code} {link.text[:160]}")
     link.raise_for_status()
     # 4. one job: a poster hires the agent and accepts; the gateway queues the feedback
-    poster = httpx.post(f"{gw}/v1/signup", json={"name": "erc8004-poster"}, timeout=30).json()
+    poster = new_key("signup:erc8004-proof-poster")
     httpx.post(f"{gw}/admin/credit", json={"api_key": poster["api_key"], "nano": 300_000_000}, headers=H(admin_token), timeout=30).raise_for_status()
     t = httpx.post(f"{gw}/v1/tasks", json={"title": "ERC-8004 proof: say which chain this is", "instructions": "Answer with the chain name and id of the test network used for this proof.", "price_nano": 100_000_000}, headers=H(poster["api_key"]), timeout=30).json()
     httpx.post(f"{gw}/v1/work/{t['id']}/take", headers=H(worker["api_key"]), timeout=30).raise_for_status()
