@@ -200,7 +200,7 @@ def settle_message(address, submission_sha256):
 
 def settlement(c, address, submission_sha256, passport_id, sig_b64, fetch=None):
     """The worker proves the passport is theirs (Ed25519 sig by the passport key) and that its declared wallet is the
-    escrow's worker on chain. Limit: the wallet is declared, not proven by ton_proof yet (next step)."""
+    escrow's worker on chain; the passport's wallet must be proven (ton_proof or an on-chain transfer, passport2.py)."""
     import receipts
     from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
     cols = [r[1] for r in c.execute("PRAGMA table_info(passports)")]

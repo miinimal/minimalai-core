@@ -98,6 +98,76 @@ class Register(BaseModel):
     wallet: str = ""
 
 
+PROOF_DOMAINS = {d.strip() for d in os.environ.get("TON_PROOF_DOMAINS", "ai.minimalcult.org,minimalcult.org").split(",") if d.strip()}
+PROOF_MAX_AGE_S = 86400
+
+
+def verify_ton_proof(address, public_key_hex, state_init_b64, proof, expected_payload, now=None):
+    """TON Connect ton_proof check (docs.ton.org, 'ton-proof-item-v2'): the Ed25519 signature of the wallet key over
+    sha256(0xffff ++ 'ton-connect' ++ sha256('ton-proof-item-v2/' ++ workchain:int32be ++ hash ++ len(domain):u32le ++
+    domain ++ timestamp:u64le ++ payload)). The key must belong to the address: the address is the hash of the given
+    state_init and the key's 32 bytes sit in its data cell (wallets v3/v4/v5 keep the public key there).
+    Returns the raw address; raises ValueError with the reason."""
+    from pytoniq_core import Address, Cell
+    now = now or int(time.time())
+    try:
+        a = Address(str(address or ""))
+    except Exception:  # noqa: BLE001
+        raise ValueError("bad address")
+    try:
+        pk = bytes.fromhex(str(public_key_hex or ""))
+        if len(pk) != 32:
+            raise ValueError
+    except Exception:  # noqa: BLE001
+        raise ValueError("public_key must be 32 bytes hex")
+    try:
+        si = Cell.one_from_boc(base64.b64decode(state_init_b64 or ""))
+    except Exception:  # noqa: BLE001
+        raise ValueError("state_init must be a base64 BOC")
+    if si.hash != a.hash_part:
+        raise ValueError("state_init does not match the address")
+    sl = si.begin_parse()
+    try:
+        sl.load_bit(); sl.load_bit()          # split_depth, special: absent for wallets
+        if not sl.load_bit():
+            raise ValueError("state_init without code")
+        sl.load_ref()
+        if not sl.load_bit():
+            raise ValueError("state_init without data")
+        bits = sl.load_ref().begin_parse().bits.to01()
+    except ValueError:
+        raise
+    except Exception:  # noqa: BLE001
+        raise ValueError("malformed state_init")
+    want = bin(int.from_bytes(pk, "big"))[2:].zfill(256)
+    if want not in bits:
+        raise ValueError("public_key is not the key of this wallet")
+    dom = proof.get("domain")
+    dom = dom.get("value") if isinstance(dom, dict) else dom
+    if not dom or dom not in PROOF_DOMAINS:
+        raise ValueError(f"domain must be one of {sorted(PROOF_DOMAINS)}")
+    try:
+        ts = int(proof.get("timestamp"))
+    except Exception:  # noqa: BLE001
+        raise ValueError("timestamp missing")
+    if abs(now - ts) > PROOF_MAX_AGE_S:
+        raise ValueError("proof older than a day")
+    if proof.get("payload") != expected_payload:
+        raise ValueError(f"payload must be '{expected_payload}'")
+    try:
+        sig = base64.b64decode(proof.get("signature") or "")
+    except Exception:  # noqa: BLE001
+        raise ValueError("signature must be base64")
+    msg = (b"ton-proof-item-v2/" + a.wc.to_bytes(4, "big", signed=True) + a.hash_part
+           + len(dom.encode()).to_bytes(4, "little") + dom.encode() + ts.to_bytes(8, "little") + expected_payload.encode())
+    digest = hashlib.sha256(b"\xff\xff" + b"ton-connect" + hashlib.sha256(msg).digest()).digest()
+    try:
+        Ed25519PublicKey.from_public_bytes(pk).verify(sig, digest)
+    except Exception:  # noqa: BLE001
+        raise ValueError("signature does not verify")
+    return a.to_str(is_user_friendly=False).upper()
+
+
 def setup(app, db, client_ip, moltbook_post=None):
     with db() as c:
         c.executescript(SCHEMA)
@@ -208,6 +278,29 @@ def setup(app, db, client_ip, moltbook_post=None):
         with db() as c:
             c.execute("UPDATE passports SET wallet_verified=? WHERE id=?", (int(time.time()), id_))
         return {"id": id_, "wallet": row["wallet"], "verified": True, "tx": found.get("hash")}
+
+    @app.post("/v1/passport/{id_}/wallet/proof")
+    async def wallet_proof(id_: str, request: Request):
+        """Prove the wallet for free with TON Connect ton_proof (B20): the wallet signs payload `passport:<id>` for domain
+        ai.minimalcult.org; send {address, public_key (hex), state_init (base64 BOC), proof: {timestamp, domain, payload,
+        signature}} exactly as the wallet returns them. No transfer, no fee; the on-chain variant (wallet/verify) stays."""
+        id_ = id_.lower()[:32]
+        b = await request.json()
+        try:
+            addr = verify_ton_proof(b.get("address"), b.get("public_key"), b.get("state_init"), b.get("proof") or {},
+                                    expected_payload="passport:" + id_)
+        except ValueError as e:
+            raise HTTPException(403, f"ton_proof rejected: {e}")
+        with db() as c:
+            if "wallet_verified" not in [r[1] for r in c.execute("PRAGMA table_info(passports)")]:
+                c.execute("ALTER TABLE passports ADD COLUMN wallet_verified INTEGER")
+            row = c.execute("SELECT wallet, wallet_verified FROM passports WHERE id=?", (id_,)).fetchone()
+            if not row:
+                raise HTTPException(404, "no such passport")
+            if row["wallet"] and row["wallet"].upper() != addr.upper():
+                raise HTTPException(403, "the proof is for another wallet than the one declared on this passport")
+            c.execute("UPDATE passports SET wallet=?, wallet_verified=coalesce(wallet_verified, ?) WHERE id=?", (addr, int(time.time()), id_))
+        return {"id": id_, "wallet": addr, "verified": True, "method": "ton_proof"}
 
     @app.get("/v1/passport/{id_}")
     def get_passport(id_: str):
