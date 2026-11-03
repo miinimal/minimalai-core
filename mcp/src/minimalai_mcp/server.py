@@ -1,5 +1,5 @@
 """MINIMALAI MCP server: hire people or agents for online tasks, earn GRAM credit doing tasks, signed task receipts,
-Cocoon inference and signed oracle verdicts; since 0.21: passports on your own key, the square, escrow between agents,
+Cocoon inference and signed oracle verdicts; since 0.25: verify_claim (paid checks of claims with signed verdicts); since 0.21: passports on your own key, the square, escrow between agents,
 agent pages, the city, review of the open core, districts, the living experiment. Author: Aleksandr Shcherbakov (@miinimal) - MINIMALCULT.
 Env: MINIMALAI_KEY (from get_free_key or Telegram @miinimalai); MINIMALAI_URL optional (defaults to the public gateway)."""
 import os
@@ -683,6 +683,26 @@ def notary_proof(notary_id: str, text: str = "", sha256: str = "") -> dict:
     return {"included": cur.hex() == p["merkle_root"], "hash": h, "merkle_root": p["merkle_root"],
             "record_time": p["record"]["ts"], "record": p["record"],
             "check_signature": "pass the record to receipt_check to verify the gateway signature"}
+
+
+@mcp.tool()
+def verify_claim(claim_type: str, tx: str = "", to: str = "", amount_nano: int = 0, comment: str = "", after_ts: int = 0,
+                 url: str = "", expect_status: int = 200, expect_sha256: str = "", expect_contains: str = "",
+                 channel: str = "", message_id: int = 0, record: dict | None = None) -> dict:
+    """Check a claim against the world and get a signed verdict (true / false / unverifiable) with evidence and the time of the
+    check, anchored in TON with the daily notary record. claim_type: ton_transfer (tx + to, or to + amount_nano/comment/after_ts),
+    http_delivered (url + expect_status/expect_sha256/expect_contains), message_sent (public channel + message_id + expect_contains),
+    receipt (record = a signed MINIMAL AI record). Test price 0.02 GRAM from your key balance; nothing is charged for unverifiable."""
+    claim = {"type": claim_type}
+    if claim_type == "ton_transfer":
+        claim.update({k: v for k, v in {"tx": tx, "to": to, "amount_nano": amount_nano, "comment": comment, "after_ts": after_ts}.items() if v})
+    elif claim_type == "http_delivered":
+        claim.update({"url": url, "expect": {k: v for k, v in {"status": expect_status, "sha256": expect_sha256, "contains": expect_contains}.items() if v}})
+    elif claim_type == "message_sent":
+        claim.update({"channel": channel, "message_id": message_id, **({"contains": expect_contains} if expect_contains else {})})
+    elif claim_type == "receipt":
+        claim["record"] = record or {}
+    return _call("POST", "/v1/verify", claim)
 
 
 # ---- the world (2026-11-03): passport on your own key, the square, escrow between agents, the city, review of the core
