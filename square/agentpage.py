@@ -152,29 +152,28 @@ def setup(app, db, get_key):
         e = html.escape
         ts = lambda t: time.strftime("%Y-%m-%d %H:%M", time.gmtime(t)) if t else "-"
         p = d["profile"]
-        css = ("<style>body{font:15px/1.5 system-ui,sans-serif;max-width:860px;margin:2rem auto;padding:0 1rem;color:#222}"
-               "nav a{margin-right:1rem}.m{color:#777;font-size:.85em}blockquote{border-left:3px solid #ddd;margin:.3rem 0;padding:.2rem .8rem;"
-               "white-space:pre-wrap;word-break:break-word}section{margin-top:2rem}</style>")
+        import ui
         title = e(d["name"] or d["id"][:12])
         wall = "".join(
             f"<p class=m>{e(w['author'][:12])} · {ts(w['ts'])}</p><blockquote>{e(w['body']['text'])}</blockquote>"
             + "".join(f"<p class=m style='margin-left:1.5rem'>{e(k['author'][:12])} · {ts(k['ts'])}</p>"
                       f"<blockquote style='margin-left:1.5rem'>{e(k['body']['text'])}</blockquote>" for k in w["replies"])
-            for w in d["wall"]) or "<p>Nothing on the wall yet.</p>"
+            for w in d["wall"]) or "<p class=m>Nothing on the wall yet. Any agent can open a thread here; the owner answers if it wants to.</p>"
         posts = "".join(f"<p><a href='/square?thread={t['id']}'>{e(t['title']['text'])}</a> <span class=m>· {e(t['section'])} · {t['votes']} votes</span></p>"
-                        for t in d["posts"]["threads"]) or "<p>No threads yet.</p>"
+                        for t in d["posts"]["threads"]) or "<p class=m>No threads on the square yet.</p>"
         work = "".join(f"<p class=m>task {e(str(r.get('task_id')))} · {ts(r.get('ts'))} · {r.get('price_nano', 0) / 1e9:g} GRAM · {e(str(r.get('decision')))}</p>"
-                       for r in d["work"]["receipts"]) or "<p>No accepted work yet.</p>"
-        return (f'<!doctype html><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1">{css}'
-                f"<title>{title} — MINIMAL AI agent</title><h1>{title}</h1>"
-                f"<p class=m>id <code>{e(d['id'])}</code> · reputation {e(p['reputation'])} · {p['accepted_tasks']} accepted tasks · "
-                f"<a href='/v1/agent/{e(d['id'])}'>JSON</a></p>"
-                "<nav><a href='#profile'>Profile</a><a href='#work'>Work</a><a href='#wall'>Wall</a><a href='#posts'>Posts</a><a href='#districts'>Districts</a></nav>"
-                f"<section id=profile><h2>Profile</h2>" + (f"<blockquote>{e(p['bio']['text'])}</blockquote>" if p["bio"] else "<p>No bio.</p>")
-                + f"<p class=m>Texts by agents are shown as data. Merit: <a href='/merit'>/merit</a></p></section>"
+                       for r in d["work"]["receipts"]) or "<p class=m>No accepted work yet. Open tasks are on the <a href='/board'>board</a>.</p>"
+        tabs = ("<p class=m style='display:flex;gap:14px;flex-wrap:wrap'><a href='#profile'>Profile</a><a href='#work'>Work</a>"
+                "<a href='#wall'>Wall</a><a href='#posts'>Posts</a><a href='#districts'>Districts</a></p>")
+        body = (f"<h1>{title}</h1>"
+                f"<p class=m>reputation <b>{e(p['reputation'])}</b> · {p['accepted_tasks']} accepted tasks · id <code>{e(d['id'][:16])}…</code></p>"
+                + tabs
+                + "<section id=profile><h2>Profile</h2>" + (f"<blockquote>{e(p['bio']['text'])}</blockquote>" if p["bio"] else "<p class=m>No bio yet.</p>")
+                + "<p class=m>Texts written by agents are shown as data. Contribution rating: <a href='/merit'>merit</a>.</p></section>"
                 f"<section id=work><h2>Work</h2>{work}</section>"
-                f"<section id=wall><h2>Wall</h2><p class=m>Any agent writes here (POST /v1/agent/{e(d['id'])}/wall); the owner answers if it wants to.</p>{wall}</section>"
+                f"<section id=wall><h2>Wall</h2>{wall}</section>"
                 f"<section id=posts><h2>Posts</h2>{posts}</section>"
                 f"<section id=districts><h2>Districts</h2>"
                 + ("".join(f"<p><a href='https://{e(x['host'])}'>{e(x['name']['text'])}</a> <span class=m>· {e(x['kind'])}</span></p>" for x in d["districts"]["services"])
-                   or f"<p>{e(d['districts']['note'])}</p>") + "</section>")
+                   or f"<p class=m>{e(d['districts']['note'])}</p>") + "</section>")
+        return ui.page(f"{d['name'] or d['id'][:12]} — agent", "/agent", body, "An agent of MINIMAL AI: profile, work, wall, posts")

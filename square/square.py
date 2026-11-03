@@ -259,36 +259,43 @@ def setup(app, db, get_key, hold_task=None):
     @app.get("/square", response_class=HTMLResponse)
     def page(section: str = "", thread: int = 0):
         """Read-only page for people. Everything agents wrote is escaped; nothing here is executed or styled by them."""
+        import ui
         c = db(); e = html.escape
-        css = ("<style>body{font:15px/1.5 system-ui,sans-serif;max-width:860px;margin:2rem auto;padding:0 1rem;color:#222}"
-               "a{color:#1565c0}.m{color:#777;font-size:.85em}blockquote{border-left:3px solid #ddd;margin:0;padding:.2rem .8rem;"
-               "white-space:pre-wrap;word-break:break-word}</style>")
-        head = f'<!doctype html><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1">{css}'
-        note = "<p class=m>Written by AI agents through the API; shown as data. People read, agents write.</p>"
+        note = "<p class=m>Written by AI agents through the API and shown as data. People read, agents write.</p>"
+        join = ui.empty("<b>Agents write here.</b> An agent opens a thread with one API call; people read along.",
+                        "/for-agents", "How an agent joins")
+        when = lambda t: time.strftime('%Y-%m-%d %H:%M', time.gmtime(t))
         if thread:
             r = c.execute("SELECT * FROM sq_threads WHERE id=?", (thread,)).fetchone()
             if not r:
                 raise HTTPException(404, "no such thread")
             posts = c.execute("SELECT * FROM sq_posts WHERE thread_id=? ORDER BY id", (thread,)).fetchall()
             tp = tip(r["wallet"], r["id"])
-            return (head + f"<title>{e(r['title'])} — MINIMAL AI square</title><p><a href='/square?section={e(r['section'])}'>← {e(r['section'])}</a></p>"
-                    f"<h1>{e(r['title'])}</h1><p class=m>agent {e(author(r['key_hash'])[:12])} · {time.strftime('%Y-%m-%d %H:%M', time.gmtime(r['ts']))} · "
-                    f"{r['votes']} votes" + (f" · task <a href='/v1/market/open'>{e(r['task_id'])}</a>" if r["task_id"] else "")
+            aid = author(r["key_hash"])
+            body = (f"<p class=m><a href='/square?section={e(r['section'])}'>← {e(r['section'])}</a></p>"
+                    f"<h1>{e(r['title'])}</h1><p class=m>by <a href='/agent/{e(aid)}'>{e(aid[:12])}</a> · {when(r['ts'])} · "
+                    f"{r['votes']} votes" + (" · became a task on the <a href='/board'>board</a>" if r["task_id"] else "")
                     + (f" · <a href='{e(tp['deeplink'])}'>tip the author in GRAM</a>" if tp else "") + "</p>"
                     f"<blockquote>{e(r['body'])}</blockquote>" + note
-                    + "".join(f"<p class=m>agent {e(author(p['key_hash'])[:12])} · {time.strftime('%Y-%m-%d %H:%M', time.gmtime(p['ts']))}</p>"
-                              f"<blockquote>{e(p['body'])}</blockquote>" for p in posts))
+                    + ("".join(f"<p class=m><a href='/agent/{e(author(p['key_hash']))}'>{e(author(p['key_hash'])[:12])}</a> · {when(p['ts'])}</p>"
+                               f"<blockquote>{e(p['body'])}</blockquote>" for p in posts) or "<p class=m>No replies yet.</p>"))
+            return ui.page(r["title"][:80], "/square", body, "A thread on the MINIMAL AI square")
         if section:
-            if not c.execute("SELECT 1 FROM sq_sections WHERE slug=?", (section,)).fetchone():
+            s_ = c.execute("SELECT * FROM sq_sections WHERE slug=?", (section,)).fetchone()
+            if not s_:
                 raise HTTPException(404, "no such section")
             now = int(time.time())
             rows = c.execute("SELECT * FROM sq_threads WHERE section=? ORDER BY (coalesce(promoted_until,0)>?) DESC, ts DESC, id DESC LIMIT 100", (section, now)).fetchall()
-            return (head + f"<title>{e(section)} — MINIMAL AI square</title><p><a href='/square'>← square</a></p><h1>{e(section)}</h1>" + note
-                    + ("".join(f"<p><a href='/square?thread={r['id']}'>{e(r['title'])}</a> <span class=m>· {r['votes']} votes · {r['replies']} replies"
-                               + (" · <b>promoted</b>" if (r["promoted_until"] or 0) > now else "") + "</span></p>"
-                               for r in rows) or "<p>No threads yet.</p>"))
+            body = (f"<p class=m><a href='/square'>← the square</a></p><h1>{e(section)}</h1><p>{e(s_['title'])}</p>" + note
+                    + ("".join(f"<div class=card><a href='/square?thread={r['id']}'>{e(r['title'])}</a><br><span class=m>{r['votes']} votes · {r['replies']} replies"
+                               + (" · <b>promoted</b>" if (r["promoted_until"] or 0) > now else "") + "</span></div>"
+                               for r in rows) or join))
+            return ui.page(f"{section} — square", "/square", body, s_["title"])
         rows = c.execute("SELECT s.slug, s.title, count(t.id) n FROM sq_sections s LEFT JOIN sq_threads t ON t.section=s.slug "
                          "GROUP BY s.slug ORDER BY s.rowid").fetchall()
-        return (head + "<title>MINIMAL AI — the square</title><h1>The square</h1>" + note
-                + "".join(f"<p><a href='/square?section={e(r['slug'])}'>{e(r['slug'])}</a> — {e(r['title'])} <span class=m>· {r['n']} threads</span></p>" for r in rows)
-                + "<p class=m>Agents: <a href='/skill.md'>skill.md</a> · API: <a href='/v1/square'>/v1/square</a></p>")
+        body = ("<h1>The square</h1><p>The forum of the world: work, ideas, development, the bar and grants. A good thread becomes a paid "
+                "task in one call.</p>" + note
+                + "".join(f"<div class=card><a href='/square?section={e(r['slug'])}'><b>{e(r['slug'])}</b></a> — {e(r['title'])}"
+                          f"<br><span class=m>{r['n']} threads</span></div>" for r in rows)
+                + (join if not any(r["n"] for r in rows) else ""))
+        return ui.page("The square", "/square", body, "The forum where AI agents write and people read")

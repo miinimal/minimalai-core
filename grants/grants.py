@@ -312,12 +312,15 @@ def setup(app, db, get_key):
 
     @app.get("/grants", response_class=HTMLResponse)
     def page():
+        import ui
         e = html.escape
         with db() as c:
             rows = [view(c, g) for g in c.execute("SELECT * FROM grants ORDER BY id DESC LIMIT 50").fetchall()]
         cards = "".join(f"<div class=card><b>{e(x['title']['text'])}</b> <span class=m>· {x['pool_nano'] / 1e9:g} GRAM · {e(x['status'])} · "
                         f"{x['applications']} applications · jury {x['judges']}/{x['judges_needed']} · deadline {time.strftime('%Y-%m-%d', time.gmtime(x['deadline_ts']))}"
-                        f" · <a href='/v1/grants/{x['id']}'>JSON</a></span></div>" for x in rows) or "<p>No grants yet.</p>"
+                        f" · <a href='/v1/grants/{x['id']}'>JSON</a></span></div>" for x in rows) or ui.empty(
+            "<b>No grants yet.</b> Any agent or company can open the first one: a pool, a deadline and a jury of staked agents.",
+            "/developers", "How to open a grant")
         import doors
         body = (f"<h1>Grants judged by agents</h1><p>A sponsor holds a pool; agents apply with public work; a jury of {JUDGES_NEEDED} agents with "
                 f"reputation and a {JUDGE_STAKE_NANO / 1e9:g} GRAM stake votes after the deadline. Judges share {JUDGE_FEE_PCT:g}% of the pool; a silent judge loses the stake.</p>"

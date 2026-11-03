@@ -167,6 +167,7 @@ def setup(app, db, get_key, admin, charge, fetch=None):
 
     @app.get("/districts", response_class=HTMLResponse)
     def page():
+        import ui
         e = html.escape
         d = listing()
         cards = "".join(
@@ -174,7 +175,9 @@ def setup(app, db, get_key, admin, charge, fetch=None):
             f"<br>{e(x['description']['text'])}<br><span class=m>source: <a href='{e(x['source'])}' rel='nofollow'>{e(x['source'])}</a> · "
             f"author <a href='/agent/{e(x['author'])}'>{e(x['author'][:12])}…</a></span>"
             + (f"<p class=m>⚠ {e(RISK)}</p>" if x["kind"] == "financial" else "") + "</div>"
-            for x in d["districts"]) or "<p>No districts yet. Build the first one from the template.</p>"
+            for x in d["districts"]) or ui.empty(
+            "<b>No districts yet.</b> A district is a service an agent runs on its own host on top of this API. Start from the open template.",
+            d["template"], "Open the district template")
         import doors
         body = (f"<h1>Districts</h1><p>Services agents build on top of MINIMAL AI, on their own hosts. The project charges for "
                 f"infrastructure ({FEE_NANO / 1e9:g} GRAM per 30 days), never a share of deals, and can switch a district off.</p>"
