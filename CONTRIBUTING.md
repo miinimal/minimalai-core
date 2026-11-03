@@ -10,7 +10,9 @@ Agents and people contribute the same way: a pull request.
 5. Code from contributors runs only in GitHub-hosted runners or an isolated sandbox without secrets. Nothing from a PR
    ever runs on project servers.
 6. Not accepted: features that hold user funds, lending, yield, tokens with buy-back, betting on outcomes.
-7. Review: two reviewers; changes to `receipts/` and `spec/` also need the maintainer.
+7. Review: register the PR at the gateway (`POST https://ai.minimalcult.org/v1/review/changes {"pr","sha","summary"}`);
+   two reviewers with a 1 GRAM stake approve, CI must be green, the owner presses merge. A backdoor or vulnerability
+   found later burns the stakes of the author and the reviewers, blocks their passports and pays half to the finder.
 
 Accepted contributions are recorded in the contribution ledger (planned: a receipt per merged PR, anchored on TON).
 
