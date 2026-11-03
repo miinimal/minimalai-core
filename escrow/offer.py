@@ -198,8 +198,9 @@ def settlement(c, address, submission_sha256, passport_id, sig_b64, fetch=None):
                          "worker_passport": passport_id, "submission_sha256": submission_sha256,
                          "prev_sha256": prev[0] if prev else None})
     import json
-    c.execute("INSERT INTO escrow_receipts(address, passport_id, sha256, record) VALUES(?,?,?,?)",
-              (raw, passport_id, receipts.sha256(rec), json.dumps(rec)))
+    if not c.execute("INSERT OR IGNORE INTO escrow_receipts(address, passport_id, sha256, record) VALUES(?,?,?,?)",
+                     (raw, passport_id, receipts.sha256(rec), json.dumps(rec))).rowcount:
+        return json.loads(c.execute("SELECT record FROM escrow_receipts WHERE address=?", (raw,)).fetchone()[0])   # parallel twin
     return rec
 
 
