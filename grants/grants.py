@@ -6,8 +6,10 @@ behind their judgement; the first JUDGES_NEEDED to stake are the jury. After the
 application; the application with most votes wins the pool (tie: the earlier application). Judges get JUDGE_FEE_PCT of
 the pool split equally (start value 2026-11-03) and their stakes back; a judge who did not vote loses the stake to the
 treasury. A grant with no applications or no complete jury by deadline + 7 days refunds the sponsor.
-Money here moves on key balances (balance-settled, like the legacy marketplace); the escrow variant lands with B6b's
-multi-party contract. Author: Aleksandr Shcherbakov (@miinimal) - MINIMALCULT.
+Money moves on key balances by default (balance-settled, like the legacy marketplace). B18: a grant opened with
+{"settlement": "escrow"} holds nothing - after the verdict the gateway builds an Escrow v2 offer sponsor wallet -> winner
+wallet (GET /v1/grants/{id}/escrow); judges' stakes are returned and no fee is taken, the sponsor funds and accepts from
+their own wallet, the winner's passport takes the settlement receipt from the contract. Author: Aleksandr Shcherbakov (@miinimal) - MINIMALCULT.
 """
 import html
 import os
@@ -30,7 +32,8 @@ TIER_RANK = {"new": 0, "active": 1, "trusted": 2}
 MAX_DAYS = 60
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS grants(id INTEGER PRIMARY KEY, ts INTEGER, sponsor TEXT, title TEXT, brief TEXT, pool_nano INTEGER,
-    pool_w INTEGER, deadline_ts INTEGER, status TEXT DEFAULT 'open', winner INTEGER, decided_ts INTEGER);
+    pool_w INTEGER, deadline_ts INTEGER, status TEXT DEFAULT 'open', winner INTEGER, decided_ts INTEGER, settlement TEXT DEFAULT 'balance',
+    sponsor_wallet TEXT, escrow_address TEXT);
 CREATE TABLE IF NOT EXISTS grant_apps(id INTEGER PRIMARY KEY, grant_id INTEGER, ts INTEGER, key_hash TEXT, text TEXT, link TEXT,
     UNIQUE(grant_id, key_hash));
 CREATE TABLE IF NOT EXISTS grant_judges(grant_id INTEGER, key_hash TEXT, stake_nano INTEGER, stake_w INTEGER, ts INTEGER, vote INTEGER,
@@ -43,6 +46,7 @@ def view(c, g, full=False):
     judges = c.execute("SELECT key_hash, ts, vote FROM grant_judges WHERE grant_id=? ORDER BY ts", (g["id"],)).fetchall()
     d = {"id": g["id"], "ts": g["ts"], "sponsor": receipts.pseudonym("key:" + g["sponsor"]), "title": square.data(g["title"]),
          "pool_nano": g["pool_nano"], "deadline_ts": g["deadline_ts"], "status": g["status"], "winner": g["winner"],
+         "settlement": g["settlement"] or "balance", "escrow_address": g["escrow_address"],
          "applications": len(apps), "judges": len(judges), "judges_needed": JUDGES_NEEDED,
          "judge_fee_pct": JUDGE_FEE_PCT, "judge_stake_nano": JUDGE_STAKE_NANO}
     if full:
@@ -56,6 +60,10 @@ def view(c, g, full=False):
 def setup(app, db, get_key):
     with db() as c:
         c.executescript(SCHEMA)
+        cols = [r[1] for r in c.execute("PRAGMA table_info(grants)")]
+        for col, typ in (("settlement", "TEXT DEFAULT 'balance'"), ("sponsor_wallet", "TEXT"), ("escrow_address", "TEXT")):
+            if col not in cols:
+                c.execute(f"ALTER TABLE grants ADD COLUMN {col} {typ}")
 
     def load(c, gid):
         g = c.execute("SELECT * FROM grants WHERE id=?", (gid,)).fetchone()
@@ -65,8 +73,20 @@ def setup(app, db, get_key):
 
     @app.post("/v1/grants")
     async def open_grant(request: Request, authorization: str = Header(None)):
-        """Open a grant: {"title", "brief", "pool_nano", "deadline_s"}. The pool is held from your balance."""
+        """Open a grant: {"title", "brief", "pool_nano", "deadline_s"}. The pool is held from your balance - or, with
+        {"settlement": "escrow"}, nothing is held: after the jury's decision you pay the winner through Escrow v2 from your own
+        wallet (the key's wallet or "sponsor_wallet"); the grant is public, so not paying is a public record on your page (B18)."""
         key = get_key(authorization); b = await request.json()
+        escrow_mode = b.get("settlement") == "escrow"
+        sponsor_wallet = str(b.get("sponsor_wallet") or key["owner"] or "").strip() if escrow_mode else None
+        if escrow_mode:
+            import escrow as ESC
+            if not sponsor_wallet:
+                raise HTTPException(400, "escrow settlement needs your TON wallet (sponsor_wallet)")
+            try:
+                ESC.Address(sponsor_wallet)
+            except Exception:  # noqa: BLE001
+                raise HTTPException(400, "sponsor_wallet: invalid TON address")
         title, brief = square.clean(b.get("title"), 120, "title"), square.clean(b.get("brief"), 4000, "brief")
         try:
             pool, dl = int(b.get("pool_nano") or 0), int(b.get("deadline_s") or 14 * 86400)
@@ -75,10 +95,14 @@ def setup(app, db, get_key):
         if pool < MIN_POOL_NANO or not 3600 <= dl <= MAX_DAYS * 86400:
             raise HTTPException(400, f"pool_nano >= {MIN_POOL_NANO} and deadline_s between 1 hour and {MAX_DAYS} days")
         with db() as c:
+            now = int(time.time())
+            if escrow_mode:
+                gid = c.execute("INSERT INTO grants(ts,sponsor,title,brief,pool_nano,pool_w,deadline_ts,settlement,sponsor_wallet) VALUES(?,?,?,?,?,?,?,?,?)",
+                                (now, key["key_hash"], title, brief, pool, 0, now + dl, "escrow", sponsor_wallet)).lastrowid
+                return view(c, load(c, gid), full=True)
             w = holds.take(c, key["key_hash"], pool, "tasks")
             if w is None:
                 raise HTTPException(402, f"balance too low for a {pool / 1e9:g} GRAM pool")
-            now = int(time.time())
             gid = c.execute("INSERT INTO grants(ts,sponsor,title,brief,pool_nano,pool_w,deadline_ts) VALUES(?,?,?,?,?,?,?)",
                             (now, key["key_hash"], title, brief, pool, w, now + dl)).lastrowid
             c.execute("INSERT INTO ledger(ts,key_hash,delta_nano,reason) VALUES(?,?,?,?)", (now, key["key_hash"], -pool, f"grant_hold:{gid}"))
@@ -111,6 +135,8 @@ def setup(app, db, get_key):
                 raise HTTPException(403, "the sponsor does not apply to its own grant")
             if c.execute("SELECT 1 FROM grant_judges WHERE grant_id=? AND key_hash=?", (gid, key["key_hash"])).fetchone():
                 raise HTTPException(403, "judges do not apply")
+            if (g["settlement"] or "balance") == "escrow" and not key["owner"]:
+                raise HTTPException(400, "this grant pays through Escrow v2: your key needs a TON wallet (onboard with a wallet)")
             if not c.execute("INSERT OR IGNORE INTO grant_apps(grant_id,ts,key_hash,text,link) VALUES(?,?,?,?,?)",
                              (gid, int(time.time()), key["key_hash"], text, link)).rowcount:
                 raise HTTPException(409, "you already applied")
@@ -168,8 +194,9 @@ def setup(app, db, get_key):
             # jury never completed or some judge never voted: refund the sponsor; silent judges lose the stake
             if not c.execute("UPDATE grants SET status='refunded', decided_ts=? WHERE id=? AND status='open'", (now, gid)).rowcount:
                 return None
-            holds.give(c, g["sponsor"], g["pool_nano"], g["pool_w"])
-            c.execute("INSERT INTO ledger(ts,key_hash,delta_nano,reason) VALUES(?,?,?,?)", (now, g["sponsor"], g["pool_nano"], f"grant_refund:{gid}"))
+            if (g["settlement"] or "balance") != "escrow":
+                holds.give(c, g["sponsor"], g["pool_nano"], g["pool_w"])
+                c.execute("INSERT INTO ledger(ts,key_hash,delta_nano,reason) VALUES(?,?,?,?)", (now, g["sponsor"], g["pool_nano"], f"grant_refund:{gid}"))
             for j in judges:
                 if j["vote"] is None and j["stake_address"]:
                     import stake as STK
@@ -186,6 +213,23 @@ def setup(app, db, get_key):
         best = max(tally.values())
         winner = min(a for a, n in tally.items() if n == best)
         # exactly one settlement: the status flip is the lock (two last votes in parallel cannot both pay)
+        if (g["settlement"] or "balance") == "escrow":
+            # B18: nothing was held; the sponsor pays the winner through Escrow v2 from its own wallet, judges' stakes return
+            if not c.execute("UPDATE grants SET status='awarded_escrow', winner=?, decided_ts=? WHERE id=? AND status='open'", (winner, now, gid)).rowcount:
+                return None
+            wk = c.execute("SELECT key_hash FROM grant_apps WHERE id=?", (winner,)).fetchone()[0]
+            ww = c.execute("SELECT owner FROM keys WHERE key_hash=?", (wk,)).fetchone()[0]
+            import escrow as ESC
+            try:
+                o = ESC.offer(g["sponsor_wallet"], ww, g["pool_nano"], now + 30 * 86400, int(gid) & ((1 << 63) - 1))
+                c.execute("UPDATE grants SET escrow_address=? WHERE id=?", (o["address"], gid))
+            except HTTPException:
+                pass   # offer can be rebuilt by GET /v1/grants/{id}/escrow
+            for j in judges:
+                if not j["stake_address"]:
+                    holds.give(c, j["key_hash"], j["stake_nano"], j["stake_w"])
+                    c.execute("INSERT INTO ledger(ts,key_hash,delta_nano,reason) VALUES(?,?,?,?)", (now, j["key_hash"], j["stake_nano"], f"grant_judge_unstake:{gid}"))
+            return "awarded_escrow"
         if not c.execute("UPDATE grants SET status='awarded', winner=?, decided_ts=? WHERE id=? AND status='open'", (winner, now, gid)).rowcount:
             return None
         wk = c.execute("SELECT key_hash FROM grant_apps WHERE id=?", (winner,)).fetchone()[0]
@@ -237,8 +281,9 @@ def setup(app, db, get_key):
             if g["sponsor"] == key["key_hash"] and not c.execute("SELECT 1 FROM grant_apps WHERE grant_id=?", (gid,)).fetchone():
                 if not c.execute("UPDATE grants SET status='cancelled', decided_ts=? WHERE id=? AND status='open'", (now, gid)).rowcount:
                     raise HTTPException(409, "grant is closed")
-                holds.give(c, g["sponsor"], g["pool_nano"], g["pool_w"])
-                c.execute("INSERT INTO ledger(ts,key_hash,delta_nano,reason) VALUES(?,?,?,?)", (now, g["sponsor"], g["pool_nano"], f"grant_refund:{gid}"))
+                if (g["settlement"] or "balance") != "escrow":
+                    holds.give(c, g["sponsor"], g["pool_nano"], g["pool_w"])
+                    c.execute("INSERT INTO ledger(ts,key_hash,delta_nano,reason) VALUES(?,?,?,?)", (now, g["sponsor"], g["pool_nano"], f"grant_refund:{gid}"))
                 for j in c.execute("SELECT * FROM grant_judges WHERE grant_id=?", (gid,)).fetchall():
                     if not j["stake_address"]:
                         holds.give(c, j["key_hash"], j["stake_nano"], j["stake_w"])
@@ -246,6 +291,24 @@ def setup(app, db, get_key):
             if now >= g["deadline_ts"] + 7 * 86400:
                 return {"grant_id": gid, "status": settle(c, g, now) or "open"}
             raise HTTPException(409, "only the sponsor before applications, or anyone 7 days after the deadline")
+
+    @app.get("/v1/grants/{gid}/escrow")
+    def grant_escrow(gid: int):
+        """Escrow-settled grant after the award: the Escrow v2 offer (sponsor -> winner) and the on-chain state; once the
+        contract is in HOLD the winner's passport can take a settlement receipt (POST /v1/escrow/receipt)."""
+        import escrow as ESC
+        with db() as c:
+            g = load(c, gid)
+            if (g["settlement"] or "balance") != "escrow":
+                raise HTTPException(404, "not an escrow-settled grant")
+            if g["status"] != "awarded_escrow":
+                return {"grant_id": gid, "status": g["status"], "note": "the escrow offer appears when the jury has decided"}
+            wk = c.execute("SELECT key_hash FROM grant_apps WHERE id=?", (g["winner"],)).fetchone()[0]
+            ww = c.execute("SELECT owner FROM keys WHERE key_hash=?", (wk,)).fetchone()[0]
+            o = ESC.offer(g["sponsor_wallet"], ww, g["pool_nano"], g["decided_ts"] + 30 * 86400, int(gid) & ((1 << 63) - 1))
+        st = ESC.chain_state(o["address"])
+        return {"grant_id": gid, "status": g["status"], "offer": o, "chain": {"state": st["state"] if st else "not deployed"},
+                "sponsor_duty": "fund the escrow and send ACPT; the grant is public and an unpaid award stays on the sponsor's page"}
 
     @app.get("/grants", response_class=HTMLResponse)
     def page():
