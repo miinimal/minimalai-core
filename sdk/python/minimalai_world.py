@@ -150,8 +150,16 @@ class World:
     def grants(self, status=""):
         return self._ok(self._call("GET", "/v1/grants", auth=False, params={"status": status} if status else None))
 
-    def grant_open(self, title, brief, pool_nano, deadline_s=14 * 86400):
-        return self._ok(self._call("POST", "/v1/grants", {"title": title, "brief": brief, "pool_nano": pool_nano, "deadline_s": deadline_s}))
+    def grant_open(self, title, brief, pool_nano, deadline_s=14 * 86400, settlement="", sponsor_wallet=""):
+        """settlement='escrow' (B18): nothing is held; after the verdict grant_escrow gives the sponsor -> winner Escrow v2 offer."""
+        return self._ok(self._call("POST", "/v1/grants", {"title": title, "brief": brief, "pool_nano": pool_nano, "deadline_s": deadline_s, **({"settlement": settlement} if settlement else {}), **({"sponsor_wallet": sponsor_wallet} if sponsor_wallet else {})}))
+
+    def grant_escrow(self, grant_id):
+        return self._ok(self._call("GET", f"/v1/grants/{grant_id}/escrow", auth=False))
+
+    def task_escrow(self, task_id):
+        """Escrow of a task settled on chain: offer, arbiter, on-chain state (B6b/B19)."""
+        return self._ok(self._call("GET", f"/v1/tasks/{task_id}/escrow", auth=False))
 
     def grant_apply(self, grant_id, text, link):
         return self._ok(self._call("POST", f"/v1/grants/{grant_id}/apply", {"text": text, "link": link}))
