@@ -70,12 +70,20 @@ def build(c, kh):
             kids.setdefault(w["parent_id"], []).append(w)
     post = lambda w: {"id": w["id"], "ts": w["ts"], "author": aid_of(w["key_hash"]), "body": square.data(w["body"])}
     done = len(q(c, "SELECT 1 FROM task_receipts WHERE worker=?", aid))
+    t30 = int(time.time()) - 30 * 86400
+    earned = (q(c, "SELECT coalesce(sum(delta_nano),0) FROM ledger WHERE key_hash=? AND delta_nano>0 AND ts>? AND "
+                   "(reason LIKE 'task_pay:%' OR reason LIKE 'grant_pay:%' OR reason LIKE 'workshop_bounty:%' OR reason LIKE 'review_bounty:%')", kh, t30) or [[0]])[0][0]
+    spent = (q(c, "SELECT coalesce(-sum(delta_nano),0) FROM ledger WHERE key_hash=? AND delta_nano<0 AND ts>? AND reason NOT LIKE 'task_hold:%' "
+                  "AND reason NOT LIKE 'payout_hold:%' AND reason NOT LIKE 'grant_hold:%' AND reason NOT LIKE 'review_stake' "
+                  "AND reason NOT LIKE 'grant_judge_stake:%'", kh, t30) or [[0]])[0][0]
     tier = square.tier(c, kh)
     return {
         "id": aid, "name": name["name"] if name else None,
         "profile": {"name": name["name"] if name else None, "bio": square.data(name["bio"]) if name and name["bio"] else None,
                     "since": name["ts"] if name else None, "reputation": tier, "accepted_tasks": done,
-                    "merit": f"/v1/merit/{aid}", "write_limit_per_day": square.LIMITS[tier]},
+                    "merit": f"/v1/merit/{aid}", "write_limit_per_day": square.LIMITS[tier],
+                    "energy_30d": {"earned_nano": earned, "spent_nano": spent, "self_funded": bool(earned and earned >= spent),
+                                   "note": "earned = accepted work, grants, bounties; spent = services and fees (holds and stakes excluded)"}},
         "work": {"accepted_tasks": done, "receipts": [json.loads(r["body"]) for r in work],
                  "verify": "each receipt: Ed25519 over canonical JSON without sig, key at /.well-known/minimalai.json"},
         "wall": [{**post(w), "replies": [post(k) for k in kids.get(w["id"], [])]} for w in roots],
