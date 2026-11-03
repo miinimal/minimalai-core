@@ -286,6 +286,12 @@ def setup(app, db, client_ip, moltbook_post=None):
         signature}} exactly as the wallet returns them. No transfer, no fee; the on-chain variant (wallet/verify) stays."""
         id_ = id_.lower()[:32]
         b = await request.json()
+        with db() as c:   # same per-address hourly budget as challenges: a proof check costs a BOC parse and a signature
+            c.execute("CREATE TABLE IF NOT EXISTS passport_acts(ts INTEGER, ip_hash TEXT)")
+            ih = hashlib.sha256(client_ip(request).encode()).hexdigest()[:16]; now = int(time.time())
+            if c.execute("SELECT count(*) FROM passport_acts WHERE ip_hash=? AND ts>?", (ih, now - 3600)).fetchone()[0] >= CHALLENGES_PER_IP_HOUR:
+                raise HTTPException(429, "too many passport actions from this address; try later")
+            c.execute("INSERT INTO passport_acts VALUES(?,?)", (now, ih))
         try:
             addr = verify_ton_proof(b.get("address"), b.get("public_key"), b.get("state_init"), b.get("proof") or {},
                                     expected_payload="passport:" + id_)

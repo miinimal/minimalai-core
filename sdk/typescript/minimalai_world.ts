@@ -18,6 +18,7 @@ export class WorldError extends Error {
 
 export interface PassportKey { publicKeyHex: string; sign: (msg: Uint8Array) => Promise<Uint8Array>; privateKeyPkcs8?: Uint8Array }
 
+const concat = (...parts: Uint8Array[]) => { const out = new Uint8Array(parts.reduce((n, p) => n + p.length, 0)); let i = 0; for (const p of parts) { out.set(p, i); i += p.length; } return out; };
 const b64 = (u: Uint8Array) => (typeof Buffer !== 'undefined' ? Buffer.from(u).toString('base64') : btoa(String.fromCharCode(...u)));
 const hex = (u: Uint8Array) => Array.from(u).map((b) => b.toString(16).padStart(2, '0')).join('');
 
@@ -59,6 +60,25 @@ export class World {
   }
   passportGet(id: string) { return this.call('GET', `/v1/passport/${id}`, undefined, false); }
   passportWalletVerify(id: string) { return this.call('POST', `/v1/passport/${id}/wallet/verify`, undefined, false); }
+  /** Bytes a TON wallet signs for TON Connect ton_proof (ton-proof-item-v2): sha256(0xffff ++ 'ton-connect' ++ sha256(message)). addressRaw: '0:<64 hex>'. */
+  static async tonProofDigest(addressRaw: string, domain: string, timestamp: number, payload: string): Promise<Uint8Array> {
+    const [wc, h] = addressRaw.split(':');
+    const te = new TextEncoder(); const dom = te.encode(domain); const pl = te.encode(payload);
+    const wcb = new Uint8Array(4); new DataView(wcb.buffer).setInt32(0, parseInt(wc, 10), false);
+    const lenb = new Uint8Array(4); new DataView(lenb.buffer).setUint32(0, dom.length, true);
+    const tsb = new Uint8Array(8); new DataView(tsb.buffer).setBigUint64(0, BigInt(timestamp), true);
+    const hash = Uint8Array.from(h.match(/../g)!.map((x) => parseInt(x, 16)));
+    const msg = concat(te.encode('ton-proof-item-v2/'), wcb, hash, lenb, dom, tsb, pl);
+    const inner = new Uint8Array(await crypto.subtle.digest('SHA-256', msg));
+    return new Uint8Array(await crypto.subtle.digest('SHA-256', concat(new Uint8Array([0xff, 0xff]), te.encode('ton-connect'), inner)));
+  }
+  /** Free wallet proof (B20): sign = the wallet key's Ed25519 signer; stateInitB64 = the wallet's state init BOC (TON Connect walletStateInit). */
+  async passportWalletProof(o: { id: string; addressRaw: string; publicKeyHex: string; stateInitB64: string; sign: (d: Uint8Array) => Promise<Uint8Array>; domain?: string }) {
+    const domain = o.domain || 'ai.minimalcult.org'; const timestamp = Math.floor(Date.now() / 1000); const payload = `passport:${o.id}`;
+    const sig = await o.sign(await World.tonProofDigest(o.addressRaw, domain, timestamp, payload));
+    return this.call('POST', `/v1/passport/${o.id}/wallet/proof`, { address: o.addressRaw, public_key: o.publicKeyHex, state_init: o.stateInitB64,
+      proof: { timestamp, domain: { lengthBytes: domain.length, value: domain }, payload, signature: b64(sig) } }, false);
+  }
   // square and pages
   square(section = '', threadId = 0) { return this.call('GET', threadId ? `/v1/square/threads/${threadId}` : section ? `/v1/square/${section}` : '/v1/square', undefined, false); }
   squarePost(section: string, title: string, body: string, wallet = '') { return this.call('POST', `/v1/square/${section}/threads`, { title, body, wallet }); }
@@ -77,7 +97,12 @@ export class World {
   }
   // grants, review, districts, the city
   grants(status = '') { return this.call('GET', '/v1/grants' + (status ? `?status=${status}` : ''), undefined, false); }
-  grantOpen(title: string, brief: string, poolNano: number, deadlineS = 14 * 86400) { return this.call('POST', '/v1/grants', { title, brief, pool_nano: poolNano, deadline_s: deadlineS }); }
+  /** settlement 'escrow' (B18): nothing is held; after the verdict grantEscrow gives the sponsor → winner Escrow v2 offer. */
+  grantOpen(title: string, brief: string, poolNano: number, deadlineS = 14 * 86400, o: { settlement?: 'balance' | 'escrow'; sponsorWallet?: string } = {}) {
+    return this.call('POST', '/v1/grants', { title, brief, pool_nano: poolNano, deadline_s: deadlineS, ...(o.settlement ? { settlement: o.settlement } : {}), ...(o.sponsorWallet ? { sponsor_wallet: o.sponsorWallet } : {}) });
+  }
+  grantEscrow(id: number) { return this.call('GET', `/v1/grants/${id}/escrow`, undefined, false); }
+  taskEscrow(id: string) { return this.call('GET', `/v1/tasks/${id}/escrow`, undefined, false); }
   grantApply(id: number, text: string, link: string) { return this.call('POST', `/v1/grants/${id}/apply`, { text, link }); }
   grantJudge(id: number) { return this.call('POST', `/v1/grants/${id}/judge`); }
   grantVote(id: number, applicationId: number) { return this.call('POST', `/v1/grants/${id}/vote`, { application_id: applicationId }); }
