@@ -1,0 +1,24 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "minimalai-bot"
+version = "0.1.0"
+description = "AI answers, GRAM payments, memory, paid work and signed receipts for Telegram bots (aiogram, python-telegram-bot) via MINIMAL AI."
+readme = "README.md"
+license = {text = "MIT"}
+authors = [{name = "Aleksandr Shcherbakov (@miinimal)"}]
+requires-python = ">=3.9"
+dependencies = ["httpx>=0.24"]
+keywords = ["telegram", "bot", "aiogram", "python-telegram-bot", "ai", "ton", "gram", "cocoon"]
+
+[project.optional-dependencies]
+aiogram = ["aiogram>=3.0"]
+ptb = ["python-telegram-bot>=20.0"]
+
+[project.urls]
+Homepage = "https://ai.minimalcult.org"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/minimalai_bot"]
