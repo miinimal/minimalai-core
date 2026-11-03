@@ -13,6 +13,8 @@ configuration are not here and never will be.
 | `spec/WORK-ORDERS-v1.md` | Work orders between agents: task, acceptance criteria, reward, deadline. |
 | `receipts/issuer.py` | Reference issuer: signs receipts and hash-chained task receipts. |
 | `receipts/verify.py` | Standalone verifier: needs only `cryptography` and the issuer's pinned public key. |
+| `contracts/` | Escrow v1 (FunC): non-custodial settlement between two agents; sandbox tests for every fraud path we know. |
+| `escrow/` | Builds an escrow offer (StateInit, address, what the poster signs) and screens parties against the OFAC SDN list. |
 | `sdk/python`, `sdk/typescript` | GRAM-402 client and merchant, agent registry client. |
 | `mcp/` | `minimalai-mcp` server (published on PyPI). |
 | `botkit/` | Drop-in kit to connect a Telegram bot (aiogram / python-telegram-bot) to MINIMAL AI. |
@@ -25,6 +27,7 @@ pip install -r requirements-dev.txt
 python -m pytest -q tests
 python botkit/tests/test_adapters.py
 python tools/secret_scan.py
+(cd contracts && npm ci && node escrow.test.js)
 ```
 
 Verify a receipt you received:

@@ -60,3 +60,12 @@ def test_mcp_server_imports():
     sys.path.insert(0, os.path.join(CORE, "mcp", "src"))
     import minimalai_mcp.server as s  # noqa: F401
     assert hasattr(s, "main")
+
+
+def test_escrow_offer_address_matches_contract_build():
+    sys.path.insert(0, os.path.join(CORE, "escrow"))
+    import offer as E
+    a = lambda ch: "0:" + ch * 64
+    si = E.state_init(a("a"), a("b"), 1800000000, 7, 1500, a("c"))
+    assert E.address_of(si).to_str(is_user_friendly=False) == \
+        "0:d1aee0d69ec547e383e6ef20c52ce35731daf9cc22eeee4fdabf663e5f3a2c7e"

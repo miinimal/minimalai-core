@@ -14,6 +14,18 @@ jobs:
       - run: python -m pytest -q tests
       - run: python botkit/tests/test_adapters.py
       - run: python tools/secret_scan.py
+  contracts:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: contracts
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - run: npm ci
+      - run: node escrow.test.js
   gitleaks:
     runs-on: ubuntu-latest
     steps:
