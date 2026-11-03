@@ -152,9 +152,86 @@ def setup(app, db):
                 "dns_query_hex": dns_query(name).hex(), "category_wallet": hex(wallet_category())}
 
 
+def send_internal(anchor, key, addr, to, value_nano, body_cell, state_init=None, bounce=False):
+    """One internal message from the anchor wallet (v3r2-style external with seqno); returns (status, response)."""
+    st, acc = anchor.account(addr.to_str())
+    seqno = int(acc.get("seqno") or 0)
+    b = (Builder().store_uint(0, 1).store_uint(1, 1).store_uint(1 if bounce else 0, 1).store_uint(0, 1).store_uint(0, 2)
+         .store_address(Address(to) if isinstance(to, str) else to).store_coins(value_nano).store_uint(0, 1).store_coins(0).store_coins(0)
+         .store_uint(0, 64).store_uint(0, 32))
+    if state_init is not None:
+        b = b.store_uint(1, 1).store_uint(1, 1).store_ref(state_init)
+    else:
+        b = b.store_uint(0, 1)
+    b = b.store_uint(1, 1).store_ref(body_cell)
+    internal = b.end_cell()
+    body = (Builder().store_uint(anchor.SUBWALLET, 32).store_uint(int(time.time()) + 300, 32).store_uint(seqno, 32)
+            .store_uint(0, 8).store_uint(3, 8).store_ref(internal).end_cell())
+    signed = Builder().store_bytes(key.sign(body.hash)).store_slice(body.begin_parse()).end_cell()
+    msg = (Builder().store_uint(0b10, 2).store_uint(0, 2).store_address(addr).store_coins(0).store_uint(0, 1).store_uint(1, 1)
+           .store_ref(signed).end_cell())
+    api = "https://testnet.toncenter.com" if NETWORK == "testnet" else "https://toncenter.com"
+    return anchor.http("POST", api + "/api/v2/sendBoc", {"boc": base64.b64encode(msg.to_boc()).decode()})
+
+
+def numbers_collection_init(mayor):
+    """StateInit of the city numbers collection (B10c) owned by the mayor; TEP-64 content points at the gateway."""
+    import citynum
+    here = os.path.dirname(os.path.abspath(__file__))
+    item_code = Cell.one_from_boc(base64.b64decode(open(os.path.join(here, "number_item_code.b64")).read().strip()))
+    coll_code = Cell.one_from_boc(base64.b64decode(open(os.path.join(here, "number_collection_code.b64")).read().strip()))
+    meta = "https://ai.minimalcult.org/v1/numbers/meta/"
+    content = (Builder().store_ref(Builder().store_uint(1, 8).store_bytes((meta + "collection.json").encode()).end_cell())
+               .store_ref(Builder().store_bytes(meta.encode()).end_cell()).end_cell())
+    data = (Builder().store_address(Address(mayor)).store_uint(citynum.FIRST_REGULAR, 64).store_ref(item_code).store_ref(content).end_cell())
+    return StateInit(code=coll_code, data=data), item_code
+
+
+def deploy(argv):
+    """Go-live of the city from the anchor wallet (owner need: ~0.5 TON on it): deploy the City Hall and the numbers
+    collection, then NUMB (hall -> collection). Idempotent: skips what is already active. --dry prints addresses only."""
+    import anchor
+    dry = "--dry" in argv
+    key, si, addr = anchor.wallet()
+    mayor = addr.to_str(is_user_friendly=False)
+    hall_init = state_init(mayor)
+    hall = Address((0, hall_init.serialize().hash))
+    coll_init, item_code = numbers_collection_init(mayor)
+    coll = Address((0, coll_init.serialize().hash))
+    uf = lambda a: a.to_str(is_user_friendly=True, is_bounceable=True, is_test_only=NETWORK == "testnet")
+    print(f"network {NETWORK} mayor {addr.to_str(is_user_friendly=True, is_bounceable=False, is_test_only=NETWORK == 'testnet')}")
+    print(f"CITY_CONTRACT={uf(hall)}\nNUMBERS_COLLECTION={uf(coll)}")
+    if dry:
+        return 0
+    st, acc = anchor.account(addr.to_str())
+    bal = int(acc.get("balance") or 0)
+    if bal < 400_000_000:
+        print(f"mayor wallet balance {bal / 1e9} TON < 0.4: top it up first (owner need)"); return 1
+    def active(a):
+        s2, d = anchor.account(a.to_str())
+        return s2 == 200 and str(d.get("status") or d.get("state") or "").lower() == "active"
+    steps = []
+    if not active(hall):
+        steps.append(("deploy City Hall", hall, 100_000_000, Builder().end_cell(), hall_init.serialize()))
+    if not active(coll):
+        steps.append(("deploy numbers collection", coll, 80_000_000, Builder().end_cell(), coll_init.serialize()))
+    numb = (Builder().store_uint(0x4E554D42, 32).store_uint(0, 64).store_address(coll).store_ref(item_code).end_cell())
+    steps.append(("NUMB: hall delegates numbers to the collection", hall, 30_000_000, numb, None))
+    for name, to, value, body, init in steps:
+        st, d = send_internal(anchor, key, addr, to, value, body, init)
+        print(name, "->", "sent" if st == 200 else f"failed {st}: {str(d)[:160]}")
+        if st != 200:
+            return 1
+        time.sleep(12)
+    print("done: set CITY_CONTRACT and NUMBERS_COLLECTION in the gateway env, then the owner sets dns_next_resolver of minimalcult.ton to CITY_CONTRACT")
+    return 0
+
+
 def main(argv):
     """Server runner: register pending names from the mayor wallet. --dry builds the messages and prints them."""
     import anchor
+    if argv and argv[0] == "deploy":
+        return deploy(argv[1:])
     dry = "--dry" in argv
     c = sqlite3.connect(DB_PATH); c.row_factory = sqlite3.Row
     todo = build_pending(c)
