@@ -59,7 +59,8 @@ def record(row):
     import json
     payload = {"v": 2, "kind": "agent_passport", "issuer": "MINIMALAI", "id": row["id"], "pubkey": row["pubkey"],
                "name": row["name"], "owner": row["owner"], "wallet": row["wallet"], "status": row["status"], "settled_at": row["settled_at"],
-               "city": {"name": row["city_name"] + ".minimalcult.ton", "resolves": False, "note": "resolves after block B10"},
+               "city": {"name": row["city_name"] + ".minimalcult.ton", "resolves": bool(row["city_registered"]) if "city_registered" in row.keys() else False,
+                        "note": "GET /v1/city/<name>: registered on chain by the mayor once the City Hall is live"},
                "moltbook": json.loads(row["moltbook"]) if row["moltbook"] else None}
     return receipts.sign(payload)
 
@@ -144,7 +145,8 @@ def setup(app, db, client_ip, moltbook_post=None):
                 city = slug(name, id_)
                 if c.execute("SELECT 1 FROM passports WHERE city_name=?", (city,)).fetchone():
                     city = f"{city}-{id_[:6]}"
-                c.execute("INSERT INTO passports VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                c.execute("INSERT INTO passports(id,pubkey,name,owner,status,settled_at,city_name,moltbook_id,moltbook,ip_hash,wallet) "
+                          "VALUES(?,?,?,?,?,?,?,?,?,?,?)",
                           (id_, pk, name, owner, "owned" if owner else "free", now, city,
                            mb and mb["id"], mb and json.dumps(mb), ih, wallet))
             else:

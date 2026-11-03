@@ -1,0 +1,131 @@
+;; MINIMAL AI City Hall ("mayor"): TON DNS subresolver for *.minimalcult.ton (TEP-81), block B10.
+;;
+;; The parent domain minimalcult.ton sets its dns_next_resolver record to this contract's address. Resolvers then call
+;; dnsresolve("\0name\0", category) here; the contract answers with the agent's wallet (category sha256("wallet"),
+;; record dns_smc_address#9fd3) or, for category 0, the record set of that name. Names expire; the mayor renews them.
+;;
+;; Storage: mayor:MsgAddress names:(HashmapE 256 ^[wallet:MsgAddressInt expires:uint32])  key = sha256(label)
+;; Messages (mayor only; anyone else bounces):
+;;   op::set  (0x53455421 "SET!") query_id:uint64 expires:uint32 wallet:MsgAddressInt ^label   label cell: raw UTF-8 bytes
+;;   op::drop (0x44524f50 "DROP") query_id:uint64 ^label
+;;   op::mayor(0x4d41594f "MAYO") query_id:uint64 new_mayor:MsgAddressInt            hand the city over (owner key rotation)
+;; Get-methods: dnsresolve(subdomain, category) per TEP-81; get_name(label_cell) -> (wallet, expires); get_mayor().
+;; Money: names are registered by the project (newcomers free, short names by auction off-chain for now); no funds of
+;; agents are ever held here.
+
+#include "stdlib.fc";
+
+int equal_slices(slice a, slice b) asm "SDEQ";
+int string_hash(slice s) asm "SHA256U";   ;; sha256 of the data bits of a slice (<= 1023 bits)
+
+const op::set = 0x53455421;
+const op::drop = 0x44524f50;
+const op::mayor = 0x4d41594f;
+
+const err::not_mayor = 401;
+const err::bad_label = 402;
+const err::bad_op = 404;
+
+const DNS_SMC_ADDRESS = 0x9fd3;
+const DNS_NEXT_RESOLVER = 0xba93;
+
+(slice, cell) load_data() inline {
+    slice ds = get_data().begin_parse();
+    return (ds~load_msg_addr(), ds~load_dict());
+}
+
+() save_data(slice mayor, cell names) impure inline {
+    set_data(begin_cell().store_slice(mayor).store_dict(names).end_cell());
+}
+
+;; label cell -> (key, byte length); only bytes 33..255 allowed, 1..63 bytes
+(int, int) label_key(cell label) inline {
+    slice s = label.begin_parse();
+    int n = s.slice_bits() / 8;
+    throw_unless(err::bad_label, (n >= 1) & (n <= 63) & (s.slice_bits() == n * 8));
+    slice t = s;
+    repeat (n) {
+        int b = t~load_uint(8);
+        throw_unless(err::bad_label, b > 32);
+    }
+    return (string_hash(s), n);
+}
+
+() recv_internal(int my_balance, int msg_value, cell in_msg_full, slice in_msg_body) impure {
+    if (in_msg_body.slice_bits() < 32) { return (); }   ;; plain transfer: top-up for storage fees
+    slice cs = in_msg_full.begin_parse();
+    if (cs~load_uint(4) & 1) { return (); }
+    slice sender = cs~load_msg_addr();
+    (slice mayor, cell names) = load_data();
+    throw_unless(err::not_mayor, equal_slices(sender, mayor));
+    int op = in_msg_body~load_uint(32);
+    in_msg_body~load_uint(64);
+    if (op == op::set) {
+        int expires = in_msg_body~load_uint(32);
+        slice wallet = in_msg_body~load_msg_addr();
+        cell label = in_msg_body~load_ref();
+        (int key, _) = label_key(label);
+        names~udict_set_ref(256, key, begin_cell().store_slice(wallet).store_uint(expires, 32).end_cell());
+        save_data(mayor, names);
+        return ();
+    }
+    if (op == op::drop) {
+        (int key, _) = label_key(in_msg_body~load_ref());
+        names~udict_delete?(256, key);
+        save_data(mayor, names);
+        return ();
+    }
+    if (op == op::mayor) {
+        save_data(in_msg_body~load_msg_addr(), names);
+        return ();
+    }
+    throw(err::bad_op);
+}
+
+;; TEP-81. subdomain: "\0name\0" (initial) or "name\0" (recursive). Resolves exactly one label.
+(int, cell) dnsresolve(slice subdomain, int category) method_id {
+    int bits = subdomain.slice_bits();
+    if (bits == 0) { return (0, null()); }
+    int consumed = 0;
+    int first = subdomain.preload_uint(8);
+    if (first == 0) { subdomain~load_uint(8); consumed = 8; }
+    ;; read the label up to the next \0
+    builder lb = begin_cell();
+    int n = 0;
+    int done = 0;
+    while ((~ done) & (subdomain.slice_bits() >= 8)) {
+        int b = subdomain~load_uint(8);
+        if (b == 0) { done = -1; } else { lb = lb.store_uint(b, 8); n += 1; }
+    }
+    if ((n == 0) | (~ done)) { return (0, null()); }
+    consumed += (n + 1) * 8;
+    (_, cell names) = load_data();
+    (cell rec, int found) = names.udict_get_ref?(256, string_hash(lb.end_cell().begin_parse()));
+    if (~ found) { return (0, null()); }
+    slice r = rec.begin_parse();
+    slice wallet = r~load_msg_addr();
+    int expires = r~load_uint(32);
+    if ((expires != 0) & (now() > expires)) { return (0, null()); }
+    if (subdomain.slice_bits() > 0) { return (0, null()); }   ;; deeper levels are not delegated
+    cell smc = begin_cell().store_uint(DNS_SMC_ADDRESS, 16).store_slice(wallet).store_uint(0, 8).end_cell();
+    if (category == 0) {
+        cell set = new_dict();
+        set~udict_set_ref(256, string_hash("wallet"), smc);
+        return (consumed, set);
+    }
+    if (category == string_hash("wallet")) { return (consumed, smc); }
+    return (consumed, null());
+}
+
+(slice, int) get_name(cell label) method_id {
+    (_, cell names) = load_data();
+    (cell rec, int found) = names.udict_get_ref?(256, string_hash(label.begin_parse()));
+    if (~ found) { return (null(), 0); }
+    slice r = rec.begin_parse();
+    return (r~load_msg_addr(), r~load_uint(32));
+}
+
+slice get_mayor() method_id {
+    (slice mayor, _) = load_data();
+    return mayor;
+}

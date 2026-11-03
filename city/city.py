@@ -1,0 +1,171 @@
+"""The city (master prompt 3.5, block B10): name.minimalcult.ton -> the agent's wallet, through the City Hall contract
+(oracle-contract/contracts/mayor.fc, a TEP-81 subresolver). The mayor is the project's anchor wallet (anchor.py): it
+registers names reserved in passports (passport2.py: city_name + wallet) and renews them; it holds no agent funds.
+
+GET /v1/city                 -> contract address (per network), mayor, how resolution works, counts
+GET /v1/city/{name}          -> the reservation (wallet from the passport) and whether it is registered on chain
+Runner: `python city.py once` (server, like anchor.py) sends SET messages for pending names; `--dry` only builds them.
+Go-live needs two owner steps (master prompt, owner needs): deploy the contract and set dns_next_resolver of
+minimalcult.ton to its address. Until then names are reserved, not resolving (passport says "resolves": false).
+Author: Aleksandr Shcherbakov (@miinimal) - MINIMALCULT.
+"""
+import base64
+import hashlib
+import os
+import re
+import sqlite3
+import sys
+import time
+
+from fastapi import HTTPException
+from pytoniq_core import Address, Builder, Cell, StateInit
+
+CODE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "mayor_code.b64")
+DB_PATH = os.environ.get("MINIMALAI_DB", "/data/minimalai.db")
+NETWORK = os.environ.get("CITY_NETWORK", "testnet")
+CONTRACT = os.environ.get("CITY_CONTRACT", "")          # set after deployment; empty = reserved only
+PARENT = "minimalcult.ton"
+TERM_S = 365 * 86400                                      # names are renewed yearly (master prompt 3.5)
+OP_SET = 0x53455421
+NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]{1,30}[a-z0-9]$")
+
+
+def code():
+    return Cell.one_from_boc(base64.b64decode(open(CODE_PATH).read().strip()))
+
+
+def state_init(mayor):
+    data = Builder().store_address(Address(mayor)).store_dict(None).end_cell()
+    return StateInit(code=code(), data=data)
+
+
+def address_for(mayor):
+    return Address((0, state_init(mayor).serialize().hash))
+
+
+def set_body(name, wallet, expires, query_id=0):
+    """Internal message body for op::set (mayor -> City Hall)."""
+    if not NAME_RE.match(name):
+        raise ValueError("name: 3..32 chars a-z 0-9 -, no leading/trailing dash")
+    label = Builder().store_bytes(name.encode()).end_cell()
+    return (Builder().store_uint(OP_SET, 32).store_uint(query_id, 64).store_uint(expires, 32)
+            .store_address(Address(wallet)).store_ref(label).end_cell())
+
+
+def dns_query(name):
+    """TEP-81 subdomain slice for the initial request to the subresolver: b'\\0' + label + b'\\0'."""
+    return b"\0" + name.encode() + b"\0"
+
+
+def wallet_category():
+    return int.from_bytes(hashlib.sha256(b"wallet").digest(), "big")
+
+
+def migrate(c):
+    cols = [r[1] for r in c.execute("PRAGMA table_info(passports)")]
+    if cols and "city_registered" not in cols:
+        c.execute("ALTER TABLE passports ADD COLUMN city_registered INTEGER")
+    if cols and "city_expires" not in cols:
+        c.execute("ALTER TABLE passports ADD COLUMN city_expires INTEGER")
+
+
+def pending(c, now=None):
+    """Names with a wallet that are not on chain yet, or expire within 30 days."""
+    now = now or int(time.time())
+    migrate(c)
+    return c.execute("SELECT id, city_name, wallet, city_expires FROM passports WHERE wallet IS NOT NULL AND city_name IS NOT NULL "
+                     "AND (city_registered IS NULL OR city_expires < ?) ORDER BY settled_at", (now + 30 * 86400,)).fetchall()
+
+
+def build_pending(c, now=None):
+    now = now or int(time.time())
+    out = []
+    for r in pending(c, now):
+        try:
+            body = set_body(r["city_name"], r["wallet"], now + TERM_S)
+        except Exception:  # noqa: BLE001  a reserved slug the contract would refuse: skipped, visible in /v1/city
+            continue
+        out.append({"id": r["id"], "name": r["city_name"], "wallet": r["wallet"], "expires": now + TERM_S,
+                    "body_boc": base64.b64encode(body.to_boc()).decode(), "body_hash": body.hash.hex()})
+    return out
+
+
+def setup(app, db):
+    with db() as c:
+        migrate(c)
+
+    def mayor_address():
+        try:
+            import anchor
+            return anchor.wallet()[2].to_str(is_user_friendly=True, is_bounceable=False, is_test_only=NETWORK == "testnet")
+        except Exception:  # noqa: BLE001
+            return None
+
+    @app.get("/v1/city")
+    def city():
+        """The city: how name.minimalcult.ton resolves and what is registered."""
+        with db() as c:
+            migrate(c)   # passports table is created by passport2.py, mounted after this module
+            n_all = c.execute("SELECT count(*) FROM passports WHERE city_name IS NOT NULL").fetchone()[0]
+            n_wallet = c.execute("SELECT count(*) FROM passports WHERE city_name IS NOT NULL AND wallet IS NOT NULL").fetchone()[0]
+            n_chain = c.execute("SELECT count(*) FROM passports WHERE city_registered=1").fetchone()[0]
+            pend = len(pending(c))
+        m = mayor_address()
+        return {"parent": PARENT, "network": NETWORK, "contract": CONTRACT or None, "mayor": m,
+                "contract_if_deployed_by_mayor": address_for(m).to_str(is_user_friendly=True, is_bounceable=True, is_test_only=NETWORK == "testnet") if m else None,
+                "live": bool(CONTRACT),
+                "resolution": "TEP-81: minimalcult.ton -> dns_next_resolver -> City Hall; dnsresolve(\"\\0name\\0\", sha256('wallet')) "
+                              "-> dns_smc_address of the agent's passport wallet",
+                "names": {"reserved": n_all, "with_wallet": n_wallet, "on_chain": n_chain, "pending_registration": pend},
+                "term_days": TERM_S // 86400, "source": "https://github.com/miinimal/minimalai-core (contracts/mayor.fc)"}
+
+    @app.get("/v1/city/{name}")
+    def city_name(name: str):
+        name = name.lower().removesuffix("." + PARENT)
+        with db() as c:
+            migrate(c)
+            r = c.execute("SELECT id, wallet, city_registered, city_expires FROM passports WHERE city_name=?", (name,)).fetchone()
+        if not r:
+            raise HTTPException(404, "no such name in the city")
+        return {"name": f"{name}.{PARENT}", "passport": r["id"], "wallet": r["wallet"],
+                "on_chain": bool(r["city_registered"]), "expires": r["city_expires"], "live": bool(CONTRACT),
+                "dns_query_hex": dns_query(name).hex(), "category_wallet": hex(wallet_category())}
+
+
+def main(argv):
+    """Server runner: register pending names from the mayor wallet. --dry builds the messages and prints them."""
+    import anchor
+    dry = "--dry" in argv
+    c = sqlite3.connect(DB_PATH); c.row_factory = sqlite3.Row
+    todo = build_pending(c)
+    if not CONTRACT:
+        print(f"city: contract not deployed (CITY_CONTRACT empty); {len(todo)} name(s) waiting")
+        return 0
+    key, si, addr = anchor.wallet()
+    for item in todo:
+        print("set", item["name"], "->", item["wallet"], "body", item["body_hash"][:16], "(dry)" if dry else "")
+        if dry:
+            continue
+        st, acc = anchor.account(addr.to_str())
+        seqno = int(acc.get("seqno") or 0)
+        internal = (Builder().store_uint(0, 1).store_uint(1, 1).store_uint(1, 1).store_uint(0, 1).store_uint(0, 2)
+                    .store_address(Address(CONTRACT)).store_coins(50_000_000).store_uint(0, 1).store_coins(0).store_coins(0)
+                    .store_uint(0, 64).store_uint(0, 32).store_uint(0, 1).store_uint(1, 1)
+                    .store_ref(Cell.one_from_boc(base64.b64decode(item["body_boc"]))).end_cell())
+        body = (Builder().store_uint(anchor.SUBWALLET, 32).store_uint(int(time.time()) + 300, 32).store_uint(seqno, 32)
+                .store_uint(0, 8).store_uint(1, 8).store_ref(internal).end_cell())
+        signed = Builder().store_bytes(key.sign(body.hash)).store_slice(body.begin_parse()).end_cell()
+        msg = (Builder().store_uint(0b10, 2).store_uint(0, 2).store_address(addr).store_coins(0).store_uint(0, 1).store_uint(1, 1)
+               .store_ref(signed).end_cell())
+        api = "https://testnet.toncenter.com" if NETWORK == "testnet" else "https://toncenter.com"
+        st, d = anchor.http("POST", api + "/api/v2/sendBoc", {"boc": base64.b64encode(msg.to_boc()).decode()})
+        print("sent" if st == 200 else f"send failed {st}: {str(d)[:200]}")
+        if st == 200:
+            c.execute("UPDATE passports SET city_registered=1, city_expires=? WHERE id=?", (item["expires"], item["id"]))
+            c.commit()
+            time.sleep(3)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
