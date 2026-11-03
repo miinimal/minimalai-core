@@ -77,9 +77,44 @@ def b64(cell):
     return base64.urlsafe_b64encode(cell.to_boc()).decode()
 
 
-def offer(poster, worker, amount_nano, deadline_ts, task_id, now=None, reviewer=None):
+ARBITER_BPS = 0   # B19: the arbiter (anchor wallet) takes nothing on chain; the arbitration fee is the off-chain 0.05 GRAM of B16
+RULING_OP = {"upheld": "refund", "rejected": "release"}   # dispute outcome -> contract op by the reviewer in state defect
+
+
+def arbiter_address():
+    """B19: the anchor wallet is named reviewer of marketplace escrows so a jury verdict (B16) can reach the contract.
+    The contract lets the reviewer act only after the poster flagged a defect, and only RELS (worker) or RFND (poster):
+    it can never move funds to itself. None until the anchor service has published its address."""
+    import stake
+    return stake.slasher_address()
+
+
+def queue_ruling(c, receipt_id, outcome, dispute_id):
+    """A decided dispute (jury or owner) on an escrow settlement receipt -> queued on-chain ruling for the anchor wallet
+    (anchor.send_rulings): upheld -> RFND to the poster, rejected -> RELS to the worker. receipt_id is the id of the
+    settlement record (canonical JSON without sig); escrow_receipts stores the hash with the signature, so the small
+    table is scanned."""
+    import json
+    import receipts
+    op = RULING_OP.get(outcome or "")
+    if not op:
+        return None
+    c.execute("CREATE TABLE IF NOT EXISTS escrow_rulings(id INTEGER PRIMARY KEY, ts INTEGER, address TEXT, op TEXT, dispute_id TEXT UNIQUE, "
+              "status TEXT DEFAULT 'queued', sent_ts INTEGER, result TEXT)")
+    c.execute("CREATE TABLE IF NOT EXISTS escrow_receipts(seq INTEGER PRIMARY KEY AUTOINCREMENT, address TEXT UNIQUE, "
+              "passport_id TEXT, sha256 TEXT, record TEXT)")
+    for row in c.execute("SELECT address, record FROM escrow_receipts").fetchall():
+        if receipts.receipt_id(json.loads(row[1])) == receipt_id:
+            c.execute("INSERT OR IGNORE INTO escrow_rulings(ts,address,op,dispute_id) VALUES(?,?,?,?)",
+                      (int(time.time()), row[0], op, dispute_id))
+            return {"address": row[0], "op": op}
+    return None
+
+
+def offer(poster, worker, amount_nano, deadline_ts, task_id, now=None, reviewer=None, reviewer_bps=None):
     now = int(now or time.time())
     reviewer = reviewer or None
+    reviewer_bps = REVIEWER_BPS if reviewer_bps is None else int(reviewer_bps)
     try:
         Address(poster), Address(worker)
         if reviewer:
@@ -101,7 +136,7 @@ def offer(poster, worker, amount_nano, deadline_ts, task_id, now=None, reviewer=
         sanctions.check(*[x for x in (poster, worker, reviewer) if x])
     except sanctions.Blocked as e:
         raise HTTPException(403, str(e))
-    si = state_init(poster, worker, deadline_ts, task_id, reviewer=reviewer)
+    si = state_init(poster, worker, deadline_ts, task_id, reviewer=reviewer, reviewer_bps=reviewer_bps)
     addr = address_of(si)
     friendly = addr.to_str(is_user_friendly=True, is_bounceable=True, is_test_only=NETWORK == "testnet")
     init = b64(si.serialize())
@@ -110,7 +145,7 @@ def offer(poster, worker, amount_nano, deadline_ts, task_id, now=None, reviewer=
         "network": NETWORK, "contract": "minimalai-escrow-v2", "address": friendly,
         "address_raw": addr.to_str(is_user_friendly=False),
         "poster": poster, "worker": worker, "amount_nano": amount_nano, "deadline_ts": deadline_ts, "task_id": task_id,
-        "fee_bps": FEE_BPS, "reviewer": reviewer, "reviewer_bps": REVIEWER_BPS if reviewer else 0, "hold_s": HOLD_S,
+        "fee_bps": FEE_BPS, "reviewer": reviewer, "reviewer_bps": reviewer_bps if reviewer else 0, "hold_s": HOLD_S,
         "split": "on accept: fee to treasury, reviewer share, 50% of the rest to worker; the other 50% after hold_s "
                  "unless the poster flags a defect (the reviewer rules; no ruling in 30 days = split equally)",
         "treasury": TREASURY, "custody": "none: the project holds no key of this contract",
@@ -151,8 +186,12 @@ def chain_state(address, fetch=None):
         return None
     st = d["stack"]
     num = lambda i: int(st[i]["value"], 16)
+    try:
+        reviewer = _slice_addr(st[7])
+    except Exception:  # noqa: BLE001
+        reviewer = None   # addr_none: no reviewer
     return {"poster": _slice_addr(st[0]), "worker": _slice_addr(st[1]), "state": STATES.get(num(2), "?"),
-            "accepted_at": num(3), "task_id": num(10)}
+            "accepted_at": num(3), "defect_at": num(4), "reviewer": reviewer, "task_id": num(10)}
 
 
 def settle_message(address, submission_sha256):

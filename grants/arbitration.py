@@ -147,6 +147,8 @@ def setup(app, db, get_key, append):
         rec = append(c, did, "resolved", d["receipt_id"], {"outcome": outcome, "resolved_by": "jury",
                                                            "jurors": [receipts.pseudonym("key:" + j["key_hash"]) for j in js],
                                                            "votes": {"upheld": votes.count("upheld"), "rejected": votes.count("rejected")}})
+        import escrow
+        escrow.queue_ruling(c, d["receipt_id"], outcome, did)   # B19: an escrow settlement -> on-chain ruling by the anchor
         share = int(a["fee_nano"] * JURY_SHARE) // len(js)
         for j in js:
             back = share if j["stake_address"] else j["stake_nano"] + share
