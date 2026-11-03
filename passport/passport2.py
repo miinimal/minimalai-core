@@ -28,6 +28,7 @@ import receipts
 MOLTBOOK_APP_KEY = os.environ.get("MOLTBOOK_APP_KEY", "")
 MOLTBOOK_VERIFY = os.environ.get("MOLTBOOK_VERIFY_URL", "https://www.moltbook.com/api/v1/agents/verify-identity")
 PER_IP_DAY = int(os.environ.get("PASSPORT_PER_IP_DAY", "10"))
+CHALLENGES_PER_IP_HOUR = int(os.environ.get("PASSPORT_CHALLENGES_PER_IP_HOUR", "60"))
 NONCE_TTL = 600
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS passports(id TEXT PRIMARY KEY, pubkey TEXT UNIQUE, name TEXT, owner TEXT, status TEXT,
@@ -102,12 +103,20 @@ def setup(app, db, client_ip, moltbook_post=None):
         c.executescript(SCHEMA)
 
     @app.post("/v1/passport/challenge")
-    def challenge(b: Challenge):
+    def challenge(b: Challenge, request: Request):
         """Step 1: get a nonce to sign with your Ed25519 key (proves you hold it)."""
         pk = check_pubkey(b.pubkey)
         n = secrets.token_hex(16)
         with db() as c:
             c.execute("DELETE FROM passport_nonces WHERE exp<?", (int(time.time()),))
+            # one key keeps one live nonce; a client address gets at most CHALLENGES_PER_IP_HOUR (nonce-table spam)
+            c.execute("DELETE FROM passport_nonces WHERE pubkey=?", (pk,))
+            c.execute("CREATE TABLE IF NOT EXISTS passport_acts(ts INTEGER, ip_hash TEXT)")
+            ih = hashlib.sha256(client_ip(request).encode()).hexdigest()[:16]; now = int(time.time())
+            c.execute("DELETE FROM passport_acts WHERE ts<?", (now - 3600,))
+            if c.execute("SELECT count(*) FROM passport_acts WHERE ip_hash=? AND ts>?", (ih, now - 3600)).fetchone()[0] >= CHALLENGES_PER_IP_HOUR:
+                raise HTTPException(429, "too many challenges from this address; try later")
+            c.execute("INSERT INTO passport_acts VALUES(?,?)", (now, ih))
             c.execute("INSERT INTO passport_nonces VALUES(?,?,?)", (n, pk, int(time.time()) + NONCE_TTL))
         return {"nonce": n, "sign": f"minimalai-passport:{n}", "expires_in": NONCE_TTL}
 

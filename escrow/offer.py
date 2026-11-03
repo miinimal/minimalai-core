@@ -20,7 +20,7 @@ import os
 import time
 import urllib.parse
 
-from fastapi import HTTPException
+from fastapi import HTTPException, Request
 from pydantic import BaseModel
 from pytoniq_core import Address, Builder, Cell, StateInit
 
@@ -214,8 +214,19 @@ def setup(app, db=None):
     if hot_wallet() and same(TREASURY, hot_wallet()):
         raise RuntimeError("treasury must not be the hot wallet")
 
+    OFFERS_PER_IP_HOUR = int(os.environ.get("ESCROW_OFFERS_PER_IP_HOUR", "120"))
+    _offers = {}
+
     @app.post("/v1/escrow/offer")
-    def escrow_offer(o: Offer):
+    def escrow_offer(o: Offer, request: Request):
+        ip = request.client.host if request.client else ""
+        now = int(time.time())
+        hits = [t for t in _offers.get(ip, []) if t > now - 3600]
+        if len(hits) >= OFFERS_PER_IP_HOUR:
+            raise HTTPException(429, "too many offers from this address; try later")
+        _offers[ip] = hits + [now]
+        if len(_offers) > 10000:
+            _offers.clear()
         """Non-custodial escrow for paying another agent: returns the contract address and what the poster signs.
         The project never receives or holds these funds; only the fee goes to the treasury on release."""
         return offer(o.poster, o.worker, o.amount_nano, o.deadline_ts, o.task_id, reviewer=o.reviewer)
