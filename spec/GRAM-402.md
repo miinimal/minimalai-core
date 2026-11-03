@@ -203,9 +203,11 @@ repeat the request with the `X-PAYMENT` header as described above.
 Status (2026-11-03): proven in the TVM sandbox with TON Tech's own contracts (`contracts/agentic.test.js` in the open core,
 compiled from github.com/the-ton-tech/agentic-wallet-contract commit a11ddb7 with @ton/tolk-js 1.2.0): the operator key signs
 one external request, the merchant receives a plain `op=0` comment transfer from the wallet's own address, a replay and a
-foreign key are refused. The public-testnet run (`ops/cocoon-testnet/agentic.ts`, the same steps against the testnet
-gateway) is prepared and waits for the owner's go, because it deploys third-party contract code from the project's testnet
-wallet; this paragraph will carry the transaction link when it lands. The official collection exists on mainnet only (`EQByQ19qvWxW7VibSbGEgZiYMqilHY5y1a_eeSL2VaXhfy07`), so the
+foreign key are refused. On the public TON testnet (2026-11-03 23:08 UTC, `ops/cocoon-testnet/agentic.ts`): collection
+`kQBw9V-rl2AJASpXQwyq8L8Szrf7dZ-rxPGX-xfHaGnGFXQ1`, agentic wallet `kQAKG0SSRCW82c_7ekjuZrnAPAVXFeFBSWn33qMN7cFKSlBx` (owner = the
+testnet wallet, operator = the agent's key, funded with 0.2 test TON); the agent paid invoice `be5c4063417b9202` (0.01 test GRAM) with one
+operator-signed external request; the testnet gateway answered 200 with a signed receipt and recorded the payer as the agentic wallet's
+own address (`0:0A1B4492…`): https://testnet.tonviewer.com/kQAKG0SSRCW82c_7ekjuZrnAPAVXFeFBSWn33qMN7cFKSlBx The official collection exists on mainnet only (`EQByQ19qvWxW7VibSbGEgZiYMqilHY5y1a_eeSL2VaXhfy07`), so the
 testnet proof uses a collection deployed from the same open source (github.com/the-ton-tech/agentic-wallet-contract).
 
 ## Next (v0.2)

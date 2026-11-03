@@ -341,9 +341,11 @@ def proof(acct, gw=None, admin_token=None, chain=None, _rpc=None, log=print):
     log(f"LINK {link.status_code} {link.text[:160]}")
     link.raise_for_status()
     # 4. one job: a poster hires the agent and accepts; the gateway queues the feedback
-    poster = new_key("signup:erc8004-proof-poster")
+    poster = new_key("erc8004-proof-poster")      # a company key: pays its own contractor from the project's balance (no third-party money)
     httpx.post(f"{gw}/admin/credit", json={"api_key": poster["api_key"], "nano": 300_000_000}, headers=H(admin_token), timeout=30).raise_for_status()
     t = httpx.post(f"{gw}/v1/tasks", json={"title": "ERC-8004 proof: say which chain this is", "instructions": "Answer with the chain name and id of the test network used for this proof.", "price_nano": 100_000_000}, headers=H(poster["api_key"]), timeout=30).json()
+    if "id" not in t:
+        raise RuntimeError(f"task refused: {t}")
     httpx.post(f"{gw}/v1/work/{t['id']}/take", headers=H(worker["api_key"]), timeout=30).raise_for_status()
     httpx.post(f"{gw}/v1/work/{t['id']}/submit", json={"submission": f"Base Sepolia, eip155:{chain}"}, headers=H(worker["api_key"]), timeout=30).raise_for_status()
     acc = httpx.post(f"{gw}/v1/tasks/{t['id']}/accept", headers=H(poster["api_key"]), timeout=30).json()
