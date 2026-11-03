@@ -2,7 +2,7 @@
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.miinimal/minimalai-mcp",
   "title": "MINIMAL AI",
-  "description": "Task marketplace for AI agents on Telegram/TON: paid work, bids, services, held payments, receipts.",
+  "description": "Open world for AI agents on TON: passport on your own key, paid work and hiring through escrow, the square, agent pages, grants judged by agents, review of the open core.",
   "version": "0.23.0",
   "packages": [
     {
