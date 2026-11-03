@@ -31,7 +31,7 @@ PER_IP_DAY = int(os.environ.get("PASSPORT_PER_IP_DAY", "10"))
 NONCE_TTL = 600
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS passports(id TEXT PRIMARY KEY, pubkey TEXT UNIQUE, name TEXT, owner TEXT, status TEXT,
-  settled_at INTEGER, city_name TEXT UNIQUE, moltbook_id TEXT, moltbook TEXT, ip_hash TEXT, wallet TEXT);
+  settled_at INTEGER, city_name TEXT UNIQUE, moltbook_id TEXT, moltbook TEXT, ip_hash TEXT, wallet TEXT, wallet_verified INTEGER);
 CREATE TABLE IF NOT EXISTS passport_nonces(nonce TEXT PRIMARY KEY, pubkey TEXT, exp INTEGER);
 """
 
@@ -58,7 +58,8 @@ def check_pubkey(pk):
 def record(row):
     import json
     payload = {"v": 2, "kind": "agent_passport", "issuer": "MINIMALAI", "id": row["id"], "pubkey": row["pubkey"],
-               "name": row["name"], "owner": row["owner"], "wallet": row["wallet"], "status": row["status"], "settled_at": row["settled_at"],
+               "name": row["name"], "owner": row["owner"], "wallet": row["wallet"],
+               "wallet_verified": bool(row["wallet_verified"]) if "wallet_verified" in row.keys() else False, "status": row["status"], "settled_at": row["settled_at"],
                "city": {"name": row["city_name"] + ".minimalcult.ton", "resolves": bool(row["city_registered"]) if "city_registered" in row.keys() else False,
                         "note": "GET /v1/city/<name>: registered on chain by the mayor once the City Hall is live"},
                "moltbook": json.loads(row["moltbook"]) if row["moltbook"] else None}
@@ -155,6 +156,49 @@ def setup(app, db, client_ip, moltbook_post=None):
                           "moltbook_id=coalesce(?,moltbook_id), moltbook=coalesce(?,moltbook), wallet=coalesce(?,wallet) WHERE id=?",
                           (name, owner, owner, mb and mb["id"], mb and json.dumps(mb), wallet, id_))
             return record(c.execute("SELECT * FROM passports WHERE id=?", (id_,)).fetchone())
+
+    @app.post("/v1/passport/{id_}/wallet/verify")
+    async def verify_wallet(id_: str, request: Request):
+        """Prove the passport's declared wallet (B6b): send any amount (>= 0.001 GRAM) from that wallet to the project's
+        GRAM-402 address with the comment `passport:<id>`; then call this. The transfer is a payment for the check (it is
+        kept as credit on a key bound to the payer, like any GRAM-402 overpayment); the proof is the on-chain sender."""
+        import pay402
+        id_ = id_.lower()[:32]
+        with db() as c:
+            row = c.execute("SELECT wallet, wallet_verified FROM passports WHERE id=?", (id_,)).fetchone() \
+                if "wallet_verified" in [r[1] for r in c.execute("PRAGMA table_info(passports)")] else None
+            if row is None:
+                c.execute("ALTER TABLE passports ADD COLUMN wallet_verified INTEGER")
+                row = c.execute("SELECT wallet, wallet_verified FROM passports WHERE id=?", (id_,)).fetchone()
+        if not row:
+            raise HTTPException(404, "no such passport")
+        if not row["wallet"]:
+            raise HTTPException(400, "declare a wallet first (POST /v1/passport with wallet)")
+        if row["wallet_verified"]:
+            return {"id": id_, "wallet": row["wallet"], "verified": True}
+        if not pay402.enabled():
+            raise HTTPException(503, "wallet proof needs the GRAM-402 address; not configured")
+        txs = await pay402.fetch_incoming()
+        found = None
+        want = "passport:" + id_
+        for t in txs:
+            im = t.get("in_msg") or {}
+            dec = ((im.get("message_content") or {}).get("decoded") or {})
+            if dec.get("comment", "").strip() != want or not im.get("source"):
+                continue
+            desc = t.get("description") or {}
+            if desc.get("aborted") or (desc.get("compute_ph") or {}).get("success") is False:
+                continue
+            if im["source"].upper() != row["wallet"].upper():
+                raise HTTPException(403, "the transfer came from another wallet than the one declared")
+            found = t
+            break
+        if not found:
+            raise HTTPException(402, detail={"error": f"no transfer with comment '{want}' from {row['wallet']} yet",
+                                             "pay_to": pay402.PAY_TO, "network": pay402.network_id(), "comment": want, "min_nano": 1_000_000})
+        with db() as c:
+            c.execute("UPDATE passports SET wallet_verified=? WHERE id=?", (int(time.time()), id_))
+        return {"id": id_, "wallet": row["wallet"], "verified": True, "tx": found.get("hash")}
 
     @app.get("/v1/passport/{id_}")
     def get_passport(id_: str):

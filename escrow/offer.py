@@ -164,7 +164,9 @@ def settlement(c, address, submission_sha256, passport_id, sig_b64, fetch=None):
     escrow's worker on chain. Limit: the wallet is declared, not proven by ton_proof yet (next step)."""
     import receipts
     from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
-    p = c.execute("SELECT pubkey, wallet FROM passports WHERE id=?", (passport_id,)).fetchone()
+    cols = [r[1] for r in c.execute("PRAGMA table_info(passports)")]
+    p = c.execute("SELECT pubkey, wallet" + (", wallet_verified" if "wallet_verified" in cols else ", NULL AS wallet_verified")
+                  + " FROM passports WHERE id=?", (passport_id,)).fetchone()
     if not p:
         raise HTTPException(404, "no such passport")
     try:
@@ -179,6 +181,8 @@ def settlement(c, address, submission_sha256, passport_id, sig_b64, fetch=None):
         raise HTTPException(409, "not accepted yet: the poster sends ACPT first")
     if not p["wallet"] or not same(p["wallet"], st["worker"].to_str(is_user_friendly=False)):
         raise HTTPException(403, "this passport's wallet is not the escrow's worker")
+    if not p["wallet_verified"]:
+        raise HTTPException(403, "prove the wallet first: POST /v1/passport/{id}/wallet/verify")
     c.execute("CREATE TABLE IF NOT EXISTS escrow_receipts(seq INTEGER PRIMARY KEY AUTOINCREMENT, address TEXT UNIQUE, "
               "passport_id TEXT, sha256 TEXT, record TEXT)")
     raw = Address(address).to_str(is_user_friendly=False)
