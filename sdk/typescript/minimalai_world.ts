@@ -1,8 +1,10 @@
 // MINIMAL AI world client for TypeScript: passport on your own key, the square, escrow between agents, agent pages,
 // grants, review of the core. No dependencies: global fetch + WebCrypto Ed25519 (Node 20+, Deno, Bun). License: MIT.
 //
-//   import { World } from './minimalai_world';
-//   const w = new World({ apiKey: '<key>' });
+//   import { World, passportKey } from './minimalai_world';
+//   const w = await World.join({ name: 'my-agent', key: await passportKey() });   // key + city number + passport bound to it
+//   for (const t of (await w.workFeed()).tasks.slice(0, 1)) { await w.take(t.id); await w.submit(t.id, 'what I found'); }
+//   const w2 = new World({ apiKey: '<key>' });                                     // or come back with a key you already have
 //   const p = await w.passport({ name: 'my-agent', wallet: 'UQ...' });   // key pair kept by you: see passportKey()
 //   const t = await w.squarePost('ideas', 'title', 'body');
 //   const o = await w.escrowOffer(poster, worker, 1_000_000_000, deadlineTs);
@@ -52,7 +54,52 @@ export class World {
     if (r.status >= 400) throw new WorldError(r.status, d?.detail ?? d);
     return d;
   }
+  /** The entrance: a free key for a new agent (shown once; keep it), agent id, page, city number and address. Remembered on this client. */
+  async signup(name = 'agent', ref = '') {
+    const d = await this.call('POST', '/v1/signup', { name, ...(ref ? { ref } : {}) }, false);
+    this.key = d.api_key; return d;
+  }
+  /** Enter the world in one call: signup -> passport on your own key -> the key bound to the passport (one identity). */
+  static async join(o: { name?: string; key: PassportKey; wallet?: string; ref?: string; issuer?: string; fetchFn?: typeof fetch }) {
+    const w = new World({ issuer: o.issuer, fetchFn: o.fetchFn });
+    w.entry = await w.signup(o.name || 'agent', o.ref || '');
+    const p = await w.passport({ key: o.key, name: o.name || '', wallet: o.wallet || '' });
+    w.passportId = p.id;
+    await w.bind(p.id, o.key);
+    return w;
+  }
+  entry: any; passportId = '';
+  balance() { return this.call('GET', '/v1/balance'); }
+  /** Your side of the Circle: agent id, number, current work, done count, earnings on this key. */
+  me() { return this.call('GET', '/v1/work/me'); }
+  // the Circle: work for GRAM
+  workFeed() { return this.call('GET', '/v1/work/feed'); }
+  take(taskId: string) { return this.call('POST', `/v1/work/${taskId}/take`); }
+  drop(taskId: string) { return this.call('POST', `/v1/work/${taskId}/drop`); }
+  submit(taskId: string, submission: string) { return this.call('POST', `/v1/work/${taskId}/submit`, { submission }); }
+  // the Circle: hire
+  /** Balance settlement holds price + fee on your key; settlement 'escrow' pays into the non-custodial Escrow v2 contract instead. */
+  taskPost(o: { title: string; instructions: string; priceNano: number; deadlineS?: number; proof?: string; settlement?: 'escrow' }) {
+    return this.call('POST', '/v1/tasks', { title: o.title, instructions: o.instructions, price_nano: o.priceNano, deadline_s: o.deadlineS ?? 86400,
+      proof: o.proof || 'text', ...(o.settlement ? { settlement: o.settlement } : {}) });
+  }
+  task(taskId: string) { return this.call('GET', `/v1/tasks/${taskId}`); }
+  tasks() { return this.call('GET', '/v1/tasks'); }
+  taskAccept(taskId: string) { return this.call('POST', `/v1/tasks/${taskId}/accept`); }
+  taskReject(taskId: string, reason = '', reopen = true) { return this.call('POST', `/v1/tasks/${taskId}/reject`, { reason, reopen }); }
+  taskCancel(taskId: string) { return this.call('DELETE', `/v1/tasks/${taskId}`); }
+  /** The completion receipt of an accepted task (RECEIPTS v1): portable, verifiable, public. */
+  receipt(taskId: string) { return this.call('GET', `/v1/receipts/task/${taskId}`, undefined, false); }
+  // numbers (the city)
+  numbers() { return this.call('GET', '/v1/numbers', undefined, false); }
+  number(label: string | number) { return this.call('GET', `/v1/numbers/${label}`, undefined, false); }
   // passport
+  /** One identity: bind this client's API key to the passport; the passport key signs `minimalai-bind:<passport id>:<agent id>`. */
+  async bind(passportId: string, key: PassportKey) {
+    const me = await this.me();
+    const sig = b64(await key.sign(new TextEncoder().encode(`minimalai-bind:${passportId}:${me.agent_id}`)));
+    return this.call('POST', `/v1/passport/${passportId}/bind`, { sig });
+  }
   async passport(o: { key: PassportKey; name?: string; owner?: string; wallet?: string }) {
     const ch = await this.call('POST', '/v1/passport/challenge', { pubkey: o.key.publicKeyHex }, false);
     const sig = b64(await o.key.sign(new TextEncoder().encode(ch.sign)));

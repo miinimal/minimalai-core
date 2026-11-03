@@ -27,6 +27,7 @@ MANIFEST = [
     ("sdk/python/minimalai_registry.py", "sdk/python/minimalai_registry.py"),
     ("sdk/python/minimalai_world.py", "sdk/python/minimalai_world.py"),
     ("sdk/typescript/minimalai_world.ts", "sdk/typescript/minimalai_world.ts"),
+    ("sdk/typescript/circle.test.ts", "sdk/typescript/circle.test.ts"),
     ("sdk/typescript/gram402.ts", "sdk/typescript/gram402.ts"),
     ("sdk/typescript/gram402_merchant.ts", "sdk/typescript/gram402_merchant.ts"),
     ("sdk/typescript/minimalai_registry.ts", "sdk/typescript/minimalai_registry.ts"),
