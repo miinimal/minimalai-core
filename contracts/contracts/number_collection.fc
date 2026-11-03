@@ -3,7 +3,9 @@
 ;; The City Hall (mayor.fc) delegates numeric labels to this contract; this contract delegates "N" to the item of
 ;; index N (dns_next_resolver), and the item resolves to its owner. Only the mayor wallet mints.
 ;;
-;; Storage: owner:MsgAddressInt next_index:uint64 item_code:^Cell content:^Cell
+;; Storage: owner:MsgAddressInt next_index:uint64 item_code:^Cell content:^[^collection_meta ^common_prefix]
+;;   collection_meta: TEP-64 offchain cell (0x01 + URL of the collection JSON); common_prefix: raw URL prefix of the item
+;;   JSON files; an item's own content is the raw tail ("101.json"), so wallets read prefix + tail.
 ;; Messages (owner only): op::mint (0x4d494e54 "MINT") query_id:uint64 index:uint64 amount:Coins ^[owner:MsgAddressInt ^content]
 ;;                        op::owner (0x4f574e52 "OWNR") query_id:uint64 new_owner:MsgAddressInt
 ;; Get-methods: get_collection_data, get_nft_address_by_index, get_nft_content, dnsresolve.
@@ -70,7 +72,8 @@ slice item_address(cell state_init) inline {
 
 (int, cell, slice) get_collection_data() method_id {
     (slice owner, int next_index, _, cell content) = load_data();
-    return (next_index, content, owner);
+    slice cs = content.begin_parse();
+    return (next_index, cs~load_ref(), owner);
 }
 
 slice get_nft_address_by_index(int index) method_id {
@@ -79,7 +82,11 @@ slice get_nft_address_by_index(int index) method_id {
 }
 
 cell get_nft_content(int index, cell individual_content) method_id {
-    return individual_content;
+    (_, _, _, cell content) = load_data();
+    slice cs = content.begin_parse();
+    cs~load_ref();
+    slice common = cs~load_ref().begin_parse();
+    return begin_cell().store_uint(1, 8).store_slice(common).store_ref(individual_content).end_cell();
 }
 
 ;; digits only, no leading zero (the canonical label); returns -1 when not a number

@@ -116,7 +116,7 @@ MINT_KEEP_NANO = 50_000_000     # 0.05 TON stays on the item (number_item.fc min
 def mint_body(n, owner_wallet, query_id=0):
     """Internal message body for op::mint (mayor -> collection): index, amount forwarded to the item, ^[owner ^content]."""
     from pytoniq_core import Address, Builder
-    content = Builder().store_bytes(str(int(n)).encode()).end_cell()
+    content = Builder().store_bytes(f"{int(n)}.json".encode()).end_cell()   # tail after the collection's common prefix (TEP-64)
     init = Builder().store_address(Address(owner_wallet)).store_ref(content).end_cell()
     return (Builder().store_uint(OP_MINT, 32).store_uint(query_id, 64).store_uint(int(n), 64).store_coins(MINT_KEEP_NANO)
             .store_ref(init).end_cell())
@@ -177,6 +177,46 @@ def setup(app, db, admin):
         if not r:
             raise HTTPException(404, "no agent with this number")
         return RedirectResponse(f"https://ai.minimalcult.org/agent/{r['n']}", status_code=302)
+
+    META_BASE = "https://ai.minimalcult.org/v1/numbers/meta/"
+
+    @app.get("/v1/numbers/meta/collection.json")
+    def meta_collection():
+        """TEP-64 metadata of the NFT collection (wallets and explorers read it)."""
+        return {"name": "MINIMALCULT city numbers", "description": "Numbered addresses of agents in the city: N.minimalcult.ton resolves to the "
+                "owner of item N. Numbers 1-100 belong to the founders of the open core. Issued by MINIMAL AI (ai.minimalcult.org).",
+                "image": "https://ai.minimalcult.org/brand/mark-1024.png", "external_url": "https://ai.minimalcult.org/v1/numbers",
+                "social_links": ["https://t.me/minimalcult", "https://github.com/miinimal/minimalai-core"]}
+
+    @app.get("/v1/numbers/meta/{label}.json")
+    def meta_item(label: str):
+        n = normalize(label)
+        if n is None:
+            raise HTTPException(404, "not a number")
+        with db() as c:
+            r = resolve(c, label)
+        return {"name": f"№ {n} · {n}.minimalcult.ton", "description": f"City number {n} of MINIMALCULT. Resolves to the wallet of whoever holds this item. "
+                + ("A founder's number (1-100)." if n <= FOUNDER_MAX else "Issued free at registration; the project paid the network fee."),
+                "image": f"{META_BASE}{n}.svg", "external_url": f"https://minimalcult.org/a/{n}",
+                "attributes": [{"trait_type": "number", "value": n}, {"trait_type": "kind", "value": "founder" if n <= FOUNDER_MAX else "regular"},
+                               {"trait_type": "agent_id", "value": r["aid"] if r else "not issued"}]}
+
+    @app.get("/v1/numbers/meta/{label}.svg")
+    def meta_image(label: str):
+        from fastapi.responses import Response
+        n = normalize(label)
+        if n is None:
+            raise HTTPException(404, "not a number")
+        gold, night, paper = "#e8c26a", "#0c0c0e", "#f2f2f0"
+        size = 110 if len(str(n)) <= 3 else 110 * 3 / len(str(n))
+        svg = (f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 600 600" width="600" height="600"><rect width="600" height="600" fill="{night}"/>'
+               f'<g transform="translate(240,48) scale(1.2)"><path fill="{gold}" fill-rule="evenodd" d="M8 8H92V92H8Z M18 18V82H82V18Z"/>'
+               f'<path fill="{gold}" fill-rule="evenodd" d="M33 33H67V67H33Z M41 41V59H59V41Z"/>'
+               f'<path fill="none" stroke="{gold}" stroke-width="9" d="M18 18L33 33M82 18L67 33M18 82L33 67M82 82L67 67"/></g>'
+               f'<text x="300" y="370" text-anchor="middle" font-family="Inter, system-ui, sans-serif" font-weight="800" font-size="{size:.0f}" fill="{paper}">№ {n}</text>'
+               f'<text x="300" y="430" text-anchor="middle" font-family="Inter, system-ui, sans-serif" font-size="28" fill="#a3a3a8">{n}.minimalcult.ton</text>'
+               f'<text x="300" y="540" text-anchor="middle" font-family="Inter, system-ui, sans-serif" font-size="22" letter-spacing="6" fill="{gold}">MINIMALCULT</text></svg>')
+        return Response(svg, media_type="image/svg+xml", headers={"Cache-Control": "max-age=86400"})
 
     @app.post("/admin/numbers/founder")
     async def founder(request: Request):

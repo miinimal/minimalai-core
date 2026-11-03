@@ -26,7 +26,9 @@ async function compile(target, out) {
 
   const bc = await Blockchain.create();
   const mayor = await bc.treasury('mayor'), agent = await bc.treasury('agent'), buyer = await bc.treasury('buyer'), stranger = await bc.treasury('stranger');
-  const content = beginCell().storeUint(1, 8).storeBuffer(Buffer.from('https://ai.minimalcult.org/v1/numbers/meta.json')).endCell();
+  const META = 'https://ai.minimalcult.org/v1/numbers/meta/', content = beginCell()
+    .storeRef(beginCell().storeUint(1, 8).storeBuffer(Buffer.from(META + 'collection.json')).endCell())
+    .storeRef(beginCell().storeBuffer(Buffer.from(META)).endCell()).endCell();
   const collInit = { code: collCode, data: beginCell().storeAddress(mayor.address).storeUint(101, 64).storeRef(itemCode).storeRef(content).endCell() };
   const coll = contractAddress(0, collInit);
   const mayorInit = { code: mayorCode, data: beginCell().storeAddress(mayor.address).storeDict(null).storeMaybeRef(null).endCell() };
@@ -36,7 +38,7 @@ async function compile(target, out) {
   const exitAt = (res, addr) => res.transactions.find((t) => t.inMessage?.info?.dest?.equals?.(addr))?.description?.computePhase?.exitCode;
   const itemAddr = async (i) => (await bc.runGetMethod(coll, 'get_nft_address_by_index', [{ type: 'int', value: BigInt(i) }])).stackReader.readAddress();
   const mint = (who, index, owner, value = '0.06') => who.send({ to: coll, value: toNano(value), body: beginCell().storeUint(OP.mint, 32).storeUint(0, 64)
-    .storeUint(index, 64).storeCoins(toNano('0.05')).storeRef(beginCell().storeAddress(owner).storeRef(beginCell().storeBuffer(Buffer.from(String(index))).endCell()).endCell()).endCell() });
+    .storeUint(index, 64).storeCoins(toNano('0.05')).storeRef(beginCell().storeAddress(owner).storeRef(beginCell().storeBuffer(Buffer.from(String(index) + '.json')).endCell()).endCell()).endCell() });
   const resolveAt = async (addr, name, cat) => {
     const res = await bc.runGetMethod(addr, 'dnsresolve', [{ type: 'slice', cell: beginCell().storeBuffer(Buffer.from(name, 'latin1')).endCell() }, { type: 'int', value: cat }]);
     const s = res.stackReader; return { bits: Number(s.readBigNumber()), cell: s.readCellOpt() };
@@ -113,6 +115,11 @@ async function compile(target, out) {
     await mayor.send({ to: item, value: toNano('0.05'), body: beginCell().storeUint(OP.transfer, 32).storeUint(0, 64).storeAddress(agent.address).storeAddress(mayor.address).storeBit(0).storeCoins(0).storeBit(0).endCell() });
     assert.ok((await resolve('\x00102\x00', CAT_WALLET)).cell.beginParse().skip(16).loadAddress().equals(agent.address));
     const cd = (await bc.runGetMethod(coll, 'get_collection_data', [])).stackReader; assert.equal(cd.readBigNumber(), 103n);
+    const meta = cd.readCell().beginParse(); assert.equal(meta.loadUint(8), 1); assert.equal(meta.loadStringTail(), META + 'collection.json');
+    const d = (await bc.runGetMethod(item, 'get_nft_data', [])).stackReader; d.readBigNumber(); d.readBigNumber(); d.readAddress(); d.readAddress();
+    const ind = d.readCell();
+    const full = (await bc.runGetMethod(coll, 'get_nft_content', [{ type: 'int', value: 102n }, { type: 'cell', cell: ind }])).stackReader.readCell().beginParse();
+    assert.equal(full.loadUint(8), 1); assert.equal(full.loadStringTail(), META + '102.json', 'wallets read prefix + tail');
   });
 
   console.log(`NUMBERS OK ${n}/5`);
