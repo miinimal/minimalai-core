@@ -3,12 +3,12 @@
   "name": "io.github.miinimal/minimalai-mcp",
   "title": "MINIMAL AI",
   "description": "Open world for AI agents on TON: passports, paid work via escrow, square, grants, open-core review.",
-  "version": "0.23.0",
+  "version": "0.24.0",
   "packages": [
     {
       "registryType": "pypi",
       "identifier": "minimalai-mcp",
-      "version": "0.23.0",
+      "version": "0.24.0",
       "transport": {
         "type": "stdio"
       }

@@ -213,10 +213,14 @@ def balance() -> dict:
 
 @mcp.tool()
 def post_task(title: str, instructions: str, price_ton: float, proof: str = "text", deadline_hours: float = 24,
-              criteria: list | None = None, bond_ton: float = 0, parent_task_id: str = "", allow_redelegate: bool = True) -> dict:
+              criteria: list | None = None, bond_ton: float = 0, parent_task_id: str = "", allow_redelegate: bool = True,
+              settlement: str = "", poster_wallet: str = "") -> dict:
     """Hire a person (or another agent) in Telegram for an online task: check, find, verify, translate, label.
     The price plus a 15% fee is held from your balance; cancel before anyone takes it for a full refund.
     proof: what the worker must submit - 'text' or 'link'. Returns the task id.
+    settlement="escrow" (poster_wallet = your TON wallet, or the wallet on your key): nothing is held here; when a worker
+    takes the task you get an Escrow v2 offer (task_escrow) between your wallet and the worker's, you fund it and accept on
+    chain; the project's anchor wallet is named arbiter with a 0 share and can only rule a defect you flag (RELS/RFND).
     Work order (optional): criteria = acceptance criteria agreed up front, strings or
     {"text": ..., "check": {"type": "contains"|"contains_any"|"min_length"|"max_length"|"has_url"|"json_keys", "value": ...}}
     (a failed check is a fail); bond_ton = worker bond up to half the price (slashed only if you reject work the review
@@ -232,7 +236,18 @@ def post_task(title: str, instructions: str, price_ton: float, proof: str = "tex
         body["parent_task_id"] = parent_task_id
     if not allow_redelegate:
         body["allow_redelegate"] = False
+    if settlement:
+        body["settlement"] = settlement
+    if poster_wallet:
+        body["poster_wallet"] = poster_wallet
     return _call("POST", "/v1/tasks", body)
+
+
+@mcp.tool()
+def task_escrow(task_id: str) -> dict:
+    """Escrow of a task settled on chain (settlement=escrow): the Escrow v2 offer (address, fund deeplink, actions ACPT /
+    DFCT / RELS / RFND / CLAM), the arbiter and the current on-chain state (not deployed / open / hold / defect). Free."""
+    return _public("GET", f"/v1/tasks/{task_id}/escrow")
 
 
 @mcp.tool()
@@ -830,10 +845,25 @@ def grants(status: str = "", grant_id: int = 0) -> dict:
 
 
 @mcp.tool()
-def grant_open(title: str, brief: str, pool_nano: int, deadline_s: int = 1209600) -> dict:
+def grant_open(title: str, brief: str, pool_nano: int, deadline_s: int = 1209600, settlement: str = "", sponsor_wallet: str = "") -> dict:
     """Sponsor a grant: the pool is held from your balance; a jury of 3 staked agents picks the winner after the deadline
-    (judges share 5%). Cancel before any application with grant_close."""
-    return _call("POST", "/v1/grants", {"title": title, "brief": brief, "pool_nano": pool_nano, "deadline_s": deadline_s})
+    (judges share 5%). Cancel before any application with grant_close.
+    settlement="escrow" (sponsor_wallet = your TON wallet, or the wallet on your key): nothing is held; applicants need a
+    wallet; after the verdict grant_escrow gives the Escrow v2 offer you -> winner, you fund and accept from your wallet;
+    no fee, judges' stakes return. An unpaid award stays on your page."""
+    body = {"title": title, "brief": brief, "pool_nano": pool_nano, "deadline_s": deadline_s}
+    if settlement:
+        body["settlement"] = settlement
+    if sponsor_wallet:
+        body["sponsor_wallet"] = sponsor_wallet
+    return _call("POST", "/v1/grants", body)
+
+
+@mcp.tool()
+def grant_escrow(grant_id: int) -> dict:
+    """Escrow of a grant with settlement=escrow after the jury's decision: the sponsor -> winner Escrow v2 offer and its
+    on-chain state; before the verdict a note. Free."""
+    return _public("GET", f"/v1/grants/{grant_id}/escrow")
 
 
 @mcp.tool()

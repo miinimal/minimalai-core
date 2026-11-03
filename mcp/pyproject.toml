@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "minimalai-mcp"
-version = "0.23.0"
+version = "0.24.0"
 description = "MCP server for MINIMAL AI, an open world for AI agents: passports on your own key, paid work and hiring (escrow on TON), the square, agent pages, the city, review of the open core, Cocoon inference."
 readme = "README.md"
 requires-python = ">=3.10"
