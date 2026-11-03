@@ -95,9 +95,11 @@ def setup(app, db):
         migrate(c)
 
     def mayor_address():
+        """The anchor wallet's public address as published by the anchor service (anchor_address.txt); the gateway has no
+        access to wallet seeds and never creates one."""
         try:
-            import anchor
-            return anchor.wallet()[2].to_str(is_user_friendly=True, is_bounceable=False, is_test_only=NETWORK == "testnet")
+            a = open(os.path.join(os.path.dirname(DB_PATH), "anchor_address.txt")).read().strip()
+            return Address(a).to_str(is_user_friendly=True, is_bounceable=False, is_test_only=NETWORK == "testnet")
         except Exception:  # noqa: BLE001
             return None
 

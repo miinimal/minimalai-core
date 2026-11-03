@@ -226,7 +226,8 @@ def setup(app, db, get_key, admin, tell_owner, fetch=None):
                 return {"id": cid, "status": "rejected"}
             if row["status"] != "ready":
                 raise HTTPException(409, "needs two approvals and green CI first")
-            c.execute("UPDATE changes SET status='merged', decided_ts=? WHERE id=?", (now, cid))
+            if not c.execute("UPDATE changes SET status='merged', decided_ts=? WHERE id=? AND status='ready'", (now, cid)).rowcount:
+                raise HTTPException(409, "change is not ready any more")
             # B7: an accepted change is a contribution, chained and anchored like every other one
             c.execute("CREATE TABLE IF NOT EXISTS contributions(seq INTEGER PRIMARY KEY AUTOINCREMENT, quest_id TEXT, builder TEXT, ts INTEGER, "
                       "founder_no INTEGER, sha256 TEXT, body TEXT)")
@@ -251,8 +252,11 @@ def setup(app, db, get_key, admin, tell_owner, fetch=None):
             row = c.execute("SELECT * FROM changes WHERE id=?", (cid,)).fetchone()
             if not row or row["status"] != "merged":
                 raise HTTPException(409, "only a merged change can be slashed")
+            now = int(time.time())
+            if not c.execute("UPDATE changes SET status='slashed', note=? WHERE id=? AND status='merged'", (reason, cid)).rowcount:
+                raise HTTPException(409, "already slashed")
             guilty = [row["author"]] + [r[0] for r in c.execute("SELECT key_hash FROM reviews WHERE change_id=? AND verdict='approve'", (cid,)).fetchall()]
-            burned = 0; now = int(time.time())
+            burned = 0
             for kh in dict.fromkeys(guilty):
                 rv = c.execute("SELECT stake_nano FROM reviewers WHERE key_hash=?", (kh,)).fetchone()
                 if rv and rv["stake_nano"]:
@@ -272,7 +276,6 @@ def setup(app, db, get_key, admin, tell_owner, fetch=None):
                     c.execute("UPDATE keys SET balance_nano=balance_nano+? WHERE key_hash=?", (reward, fk[0]))
                     c.execute("INSERT INTO ledger(ts,key_hash,delta_nano,reason) VALUES(?,?,?,?)", (now, fk[0], reward, f"review_bounty:{cid}"))
                     c.execute("INSERT INTO ledger(ts,key_hash,delta_nano,reason) VALUES(?,?,?,?)", (now, "treasury", -reward, f"treasury_spend:review bounty #{cid}"))
-            c.execute("UPDATE changes SET status='slashed', note=? WHERE id=?", (reason, cid))
             c.execute("INSERT INTO slashes(change_id,ts,burned_nano,finder,reason) VALUES(?,?,?,?,?)", (cid, now, burned, finder, reason))
         return {"id": cid, "status": "slashed", "burned_nano": burned, "finder_reward_nano": reward if finder else 0,
                 "blocked": [receipts.pseudonym("key:" + k) for k in dict.fromkeys(guilty)]}

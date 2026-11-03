@@ -123,6 +123,9 @@ def setup(app, db, get_key, append):
         if len(js) < JURORS or len(votes) < JURORS:
             return None
         outcome = "upheld" if votes.count("upheld") > votes.count("rejected") else "rejected"
+        if not c.execute("UPDATE arbitrations SET status='decided', outcome=?, decided_ts=? WHERE dispute_id=? AND status='open'",
+                         (outcome, now, did)).rowcount:
+            return None   # settled by a parallel last vote
         d = c.execute("SELECT * FROM disputes WHERE id=?", (did,)).fetchone()
         c.execute("UPDATE disputes SET status='closed', resolved_ts=?, outcome=?, note=? WHERE id=? AND status='open'",
                   (now, outcome, f"jury {votes.count('upheld')}:{votes.count('rejected')}", did))
@@ -134,7 +137,6 @@ def setup(app, db, get_key, append):
             holds.give(c, j["key_hash"], j["stake_nano"] + share, j["stake_w"])
             c.execute("INSERT INTO ledger(ts,key_hash,delta_nano,reason) VALUES(?,?,?,?)", (now, j["key_hash"], j["stake_nano"] + share, f"arbitration_juror_pay:{did}"))
         c.execute("INSERT INTO ledger(ts,key_hash,delta_nano,reason) VALUES(?,?,?,?)", (now, "platform", a["fee_nano"] - share * len(js), f"service_fee:arbitration:{did}"))
-        c.execute("UPDATE arbitrations SET status='decided', outcome=?, decided_ts=? WHERE dispute_id=?", (outcome, now, did))
         return rec
 
     @app.post("/v1/disputes/{did}/verdict")
@@ -172,24 +174,26 @@ def on_owner_resolved(c, did):
     if not a:
         return
     now = int(time.time())
+    if not c.execute("UPDATE arbitrations SET status='dissolved', decided_ts=? WHERE dispute_id=? AND status='open'", (now, did)).rowcount:
+        return
     for j in c.execute("SELECT * FROM arbitration_jurors WHERE dispute_id=?", (did,)).fetchall():
         holds.give(c, j["key_hash"], j["stake_nano"], j["stake_w"])
     holds.give(c, a["requester"], a["fee_nano"], a["fee_w"])
     c.execute("INSERT INTO ledger(ts,key_hash,delta_nano,reason) VALUES(?,?,?,?)", (now, a["requester"], a["fee_nano"], f"arbitration_refund:{did}"))
-    c.execute("UPDATE arbitrations SET status='dissolved', decided_ts=? WHERE dispute_id=?", (now, did))
 
 def expire(c, now=None):
     """Jury filled but silent past TTL: silent jurors lose the stake, voters get theirs back, fee refunded, back to the owner."""
     now = now or int(time.time())
     n = 0
     for a in c.execute("SELECT * FROM arbitrations WHERE status='open' AND filled_ts IS NOT NULL AND filled_ts<?", (now - TTL_S,)).fetchall():
+        if not c.execute("UPDATE arbitrations SET status='expired', decided_ts=? WHERE dispute_id=? AND status='open'", (now, a["dispute_id"])).rowcount:
+            continue
         for j in c.execute("SELECT * FROM arbitration_jurors WHERE dispute_id=?", (a["dispute_id"],)).fetchall():
             if j["outcome"]:
                 holds.give(c, j["key_hash"], j["stake_nano"], j["stake_w"])
             else:
                 c.execute("INSERT INTO ledger(ts,key_hash,delta_nano,reason) VALUES(?,?,?,?)", (now, "treasury", j["stake_nano"], f"split:silent_juror:{a['dispute_id']}"))
         holds.give(c, a["requester"], a["fee_nano"], a["fee_w"])
-        c.execute("UPDATE arbitrations SET status='expired', decided_ts=? WHERE dispute_id=?", (now, a["dispute_id"]))
         n += 1
     return n
 

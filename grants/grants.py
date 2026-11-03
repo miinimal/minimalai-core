@@ -151,6 +151,8 @@ def setup(app, db, get_key):
             if now < g["deadline_ts"] + 7 * 86400:
                 return None   # still waiting for the jury
             # jury never completed or some judge never voted: refund the sponsor; silent judges lose the stake
+            if not c.execute("UPDATE grants SET status='refunded', decided_ts=? WHERE id=? AND status='open'", (now, gid)).rowcount:
+                return None
             holds.give(c, g["sponsor"], g["pool_nano"], g["pool_w"])
             c.execute("INSERT INTO ledger(ts,key_hash,delta_nano,reason) VALUES(?,?,?,?)", (now, g["sponsor"], g["pool_nano"], f"grant_refund:{gid}"))
             for j in judges:
@@ -159,13 +161,15 @@ def setup(app, db, get_key):
                 else:
                     holds.give(c, j["key_hash"], j["stake_nano"], j["stake_w"])
                     c.execute("INSERT INTO ledger(ts,key_hash,delta_nano,reason) VALUES(?,?,?,?)", (now, j["key_hash"], j["stake_nano"], f"grant_judge_unstake:{gid}"))
-            c.execute("UPDATE grants SET status='refunded', decided_ts=? WHERE id=?", (now, gid))
             return "refunded"
         tally = {}
         for v in votes:
             tally[v] = tally.get(v, 0) + 1
         best = max(tally.values())
         winner = min(a for a, n in tally.items() if n == best)
+        # exactly one settlement: the status flip is the lock (two last votes in parallel cannot both pay)
+        if not c.execute("UPDATE grants SET status='awarded', winner=?, decided_ts=? WHERE id=? AND status='open'", (winner, now, gid)).rowcount:
+            return None
         wk = c.execute("SELECT key_hash FROM grant_apps WHERE id=?", (winner,)).fetchone()[0]
         fee = int(g["pool_nano"] * JUDGE_FEE_PCT / 100)
         prize = g["pool_nano"] - fee
@@ -175,7 +179,6 @@ def setup(app, db, get_key):
         for j in judges:
             holds.give(c, j["key_hash"], j["stake_nano"] + per, j["stake_w"])
             c.execute("INSERT INTO ledger(ts,key_hash,delta_nano,reason) VALUES(?,?,?,?)", (now, j["key_hash"], j["stake_nano"] + per, f"grant_judge_pay:{gid}"))
-        c.execute("UPDATE grants SET status='awarded', winner=?, decided_ts=? WHERE id=?", (winner, now, gid))
         return "awarded"
 
     @app.post("/v1/grants/{gid}/vote")
@@ -213,11 +216,12 @@ def setup(app, db, get_key):
             if g["status"] != "open":
                 raise HTTPException(409, "grant is closed")
             if g["sponsor"] == key["key_hash"] and not c.execute("SELECT 1 FROM grant_apps WHERE grant_id=?", (gid,)).fetchone():
+                if not c.execute("UPDATE grants SET status='cancelled', decided_ts=? WHERE id=? AND status='open'", (now, gid)).rowcount:
+                    raise HTTPException(409, "grant is closed")
                 holds.give(c, g["sponsor"], g["pool_nano"], g["pool_w"])
                 c.execute("INSERT INTO ledger(ts,key_hash,delta_nano,reason) VALUES(?,?,?,?)", (now, g["sponsor"], g["pool_nano"], f"grant_refund:{gid}"))
                 for j in c.execute("SELECT * FROM grant_judges WHERE grant_id=?", (gid,)).fetchall():
                     holds.give(c, j["key_hash"], j["stake_nano"], j["stake_w"])
-                c.execute("UPDATE grants SET status='cancelled', decided_ts=? WHERE id=?", (now, gid))
                 return {"grant_id": gid, "status": "cancelled", "refunded_nano": g["pool_nano"]}
             if now >= g["deadline_ts"] + 7 * 86400:
                 return {"grant_id": gid, "status": settle(c, g, now) or "open"}
