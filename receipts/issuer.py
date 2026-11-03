@@ -48,11 +48,26 @@ def sha256(obj):
     return hashlib.sha256(canon(obj) if not isinstance(obj, (bytes, bytearray)) else obj).hexdigest()
 
 
+# RECEIPTS v2 (H2-2): a receipt says how far the thing it describes got, and what it saw versus what it assumes.
+DELIVERY = {
+    "executed": "the work was done on our side (an answer produced, a submission recorded); the other party has not confirmed receipt",
+    "delivered": "the other party confirmed receipt (an acknowledgement of the answer, or the poster accepted the work)",
+    "maybe_sent": "closed by a rule without the other party's word (a silent poster, an auto-accept); treat as unconfirmed",
+    "failed": "rejected or not done; nothing to deliver",
+}
+
+
+def delivery(status, observed, assumed, by=None, ack=None):
+    """`delivery` + `distrust` blocks: what we observed ourselves versus what the next agent should not take on faith."""
+    return {"delivery": {"status": status, "by": by, "ack": ack, "meaning": DELIVERY[status]},
+            "distrust": {"observed": observed, "assumed": assumed}}
+
+
 def make(request_body, response_body, route, attestation, payment=None):
     """payment (GRAM-402): {network, transaction, payer, charged_nano} binds the on-chain payment to this answer."""
     a = attestation or {}
     payload = {
-        "v": 1, "issuer": "MINIMALAI", "ts": int(time.time()), "route": route,
+        "v": 2, "issuer": "MINIMALAI", "ts": int(time.time()), "route": route,
         "model": request_body.get("model"),
         "request_sha256": sha256(request_body),
         "response_sha256": sha256({k: v for k, v in response_body.items() if k != "minimalai"}),
@@ -65,6 +80,10 @@ def make(request_body, response_body, route, attestation, payment=None):
     }
     if payment:
         payload["payment"] = {k: payment.get(k) for k in ("network", "transaction", "payer", "charged_nano")}
+    payload.update(delivery("executed",
+                            observed=["request hash", "response hash", "route and model", "time of issue"] + (["payment transaction on chain"] if payment else []),
+                            assumed=["the client received these bytes (confirm with POST /v1/receipts/{receipt_id}/ack)", "the answer is correct"],
+                            ack="POST /v1/receipts/{receipt_id}/ack"))
     sig = key().sign(canon(payload))
     return {**payload, "sig": base64.b64encode(sig).decode()}
 
@@ -119,7 +138,7 @@ def make_task(row, decision, prev_sha256, extra=None):
     review = row["review"] or "{}"
     th = lambda t: hashlib.sha256((t or "").encode("utf-8")).hexdigest()  # plain UTF-8 text hash, easy to recheck
     payload = {
-        "v": 1, "kind": "task_completion", "issuer": "MINIMALAI", "ts": int(time.time()),
+        "v": 2, "kind": "task_completion", "issuer": "MINIMALAI", "ts": int(time.time()),
         "task_id": row["id"], "title_sha256": th(row["title"]), "instructions_sha256": th(row["instructions"]),
         "proof_type": row["proof"], "submission_sha256": th(row["submission"]),
         "worker": pseudonym(row["worker"]),
@@ -132,5 +151,11 @@ def make_task(row, decision, prev_sha256, extra=None):
     }
     if extra:
         payload.update(extra)   # e.g. work_order (workorders.py); signed with the rest
+    status = "delivered" if decision == "accepted_by_poster" else ("failed" if decision.startswith("reject") else "maybe_sent")
+    payload.update(delivery(status, by=("poster" if status == "delivered" else "rule"),
+                            observed=["the submission hash was recorded", f"the decision '{decision}' was recorded", "the payment moved on the ledger or the contract"]
+                            if status != "failed" else ["the submission hash was recorded", f"the decision '{decision}' was recorded"],
+                            assumed=["the submission text matches its hash (only the hash is signed)", "the worker is the holder of its key"]
+                            + (["the poster saw the work: it was closed by a rule, not by the poster's word"] if status == "maybe_sent" else [])))
     sig = key().sign(canon(payload))
     return {**payload, "sig": base64.b64encode(sig).decode()}

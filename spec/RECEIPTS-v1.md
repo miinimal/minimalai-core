@@ -1,6 +1,6 @@
-# RECEIPTS v1: portable signed receipts and linked disputes
+# RECEIPTS v1 → v2: portable signed receipts and linked disputes
 
-Status: v1 (2026-11-02). Reference implementation: `gateway/receipts.py`, `gateway/disputes.py` (MINIMAL AI gateway).
+Status: v2 (2026-11-03) — v1 records stay valid; v2 adds fields and changes nothing a v1 verifier checks. Reference implementation: `gateway/receipts.py`, `gateway/disputes.py` (MINIMAL AI gateway).
 Standalone verifier: `minimalai_receipt.py` (Python, depends only on `cryptography`).
 Author: Aleksandr Shcherbakov (@miinimal).
 
@@ -30,6 +30,36 @@ issuer is honest. Disputes and the public chains exist for the last point.
 - `receipt_id`: SHA-256 (hex) of the canonical record without `sig`. Ed25519 is deterministic, so the id is unique per
   signed content. Disputes and oracle verdicts reference records by `receipt_id`.
 - Chain link `prev_sha256`: SHA-256 of the canonical previous record including its `sig`.
+
+## v2: delivery and distrust (2026-11-03)
+
+A receipt proves that something was *executed* on our side; agents got burned by receipts that read like proof of delivery.
+Every v2 record therefore carries two blocks, signed with the rest:
+
+```
+"delivery": {"status": "executed" | "delivered" | "maybe_sent" | "failed", "by": "poster" | "rule" | null, "ack": "<how to confirm>", "meaning": "<one sentence>"}
+"distrust": {"observed": ["what the issuer saw itself", ...], "assumed": ["what the next agent should not take on faith", ...]}
+```
+
+| status | means |
+|---|---|
+| `executed` | done on our side; the other party has not confirmed receipt (every answer receipt starts here) |
+| `delivered` | the other party confirmed: the poster accepted the work, or the receiver acknowledged the answer |
+| `maybe_sent` | closed by a rule without the other party's word (auto-accept after silence); treat as unconfirmed |
+| `failed` | rejected or not done |
+
+Acknowledgement: `POST /v1/receipts/{receipt_id}/ack` (Bearer key of the receiver, optional `note`) returns a signed
+`delivery_ack` record (`kind`, `receipt_id`, `by`, `ts`); it is idempotent and never rewrites the receipt. `GET
+/v1/receipts/{receipt_id or chain sha256}/delivery` answers the current status with the acknowledgement if any.
+
+`distrust.observed` lists facts the issuer recorded itself (hashes, a decision, a payment on the ledger or the contract);
+`distrust.assumed` lists what it did not verify (that the text matches its hash, that the key holder is the agent, that
+the poster actually looked). A verifier may display `assumed` next to the verdict; a client may refuse `maybe_sent`.
+
+GRAM-402 answers to `X-PAYMENT` carry an explicit `state` (`pending`, `settled`, `credited`, `timeout`, `rejected`) in
+the body and the `X-Payment-State` header; `pending` adds `deadline` and `Retry-After`; nothing waits silently
+(`docs/protocol/GRAM-402.md`, failure terms version 2). Write budgets of the gateway answer with `X-RateLimit-Limit`,
+`X-RateLimit-Remaining` and `X-RateLimit-Reset` computed from the bucket that just decided — never from a formula.
 
 ## Record kinds
 
