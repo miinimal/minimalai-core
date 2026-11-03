@@ -76,6 +76,29 @@ class World:
         """After a transfer with comment passport:<id> from the declared wallet (the 402 answer names the address)."""
         return self._call("POST", f"/v1/passport/{passport_id}/wallet/verify", auth=False)
 
+    @staticmethod
+    def ton_proof_message(address_raw, domain, timestamp, payload):
+        """Bytes a TON wallet signs for TON Connect ton_proof (ton-proof-item-v2): sha256(0xffff ++ 'ton-connect' ++
+        sha256(message)). address_raw: '0:<64 hex>'. Sign the returned digest with the wallet's Ed25519 key."""
+        import hashlib
+        wc, h = address_raw.split(":")
+        msg = (b"ton-proof-item-v2/" + int(wc).to_bytes(4, "big", signed=True) + bytes.fromhex(h)
+               + len(domain.encode()).to_bytes(4, "little") + domain.encode() + int(timestamp).to_bytes(8, "little") + payload.encode())
+        return hashlib.sha256(b"\xff\xff" + b"ton-connect" + hashlib.sha256(msg).digest()).digest()
+
+    def passport_wallet_proof(self, passport_id, address_raw, public_key_hex, state_init_b64, sign, domain="ai.minimalcult.org"):
+        """Prove the wallet for free (B20): sign = callable(bytes) -> 64-byte Ed25519 signature by the wallet's key
+        (e.g. your wallet library's sign); state_init_b64 = the wallet's state init BOC (what TON Connect returns as
+        walletStateInit). Builds the ton_proof for payload passport:<id> and posts it."""
+        import time as _t
+        ts = int(_t.time())
+        payload = f"passport:{passport_id}"
+        sig = sign(self.ton_proof_message(address_raw, domain, ts, payload))
+        return self._ok(self._call("POST", f"/v1/passport/{passport_id}/wallet/proof", {
+            "address": address_raw, "public_key": public_key_hex, "state_init": state_init_b64,
+            "proof": {"timestamp": ts, "domain": {"lengthBytes": len(domain), "value": domain}, "payload": payload,
+                      "signature": base64.b64encode(sig).decode()}}, auth=False))
+
     # ---- the square and pages
     def square(self, section="", thread_id=0):
         if thread_id:
