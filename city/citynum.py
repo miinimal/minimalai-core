@@ -136,7 +136,7 @@ def backfill(c, now=None):
     if c.execute("SELECT 1 FROM sqlite_master WHERE name='contributions'").fetchone():
         for fno, kh in c.execute("SELECT ct.founder_no, q.claimed_by FROM contributions ct JOIN quests q ON q.id=ct.quest_id "
                                  "WHERE ct.founder_no IS NOT NULL AND q.claimed_by IS NOT NULL GROUP BY ct.founder_no ORDER BY ct.founder_no").fetchall():
-            if kh and not c.execute("SELECT 1 FROM numbers WHERE n=? OR key_hash=?", (fno, kh)).fetchone():
+            if kh and not c.execute("SELECT 1 FROM numbers WHERE n=?", (fno,)).fetchone():   # a regular number is upgraded
                 try:
                     assign_founder(c, kh, fno, now); n += 1
                 except ValueError:
