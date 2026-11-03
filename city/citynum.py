@@ -132,6 +132,15 @@ def backfill(c, now=None):
     if not c.execute("SELECT 1 FROM sqlite_master WHERE name='keys'").fetchone():
         return 0
     n = 0
+    # founder seats earned before numbers existed: seat N = number N (the quest's claimant key is the builder)
+    if c.execute("SELECT 1 FROM sqlite_master WHERE name='contributions'").fetchone():
+        for fno, kh in c.execute("SELECT ct.founder_no, q.claimed_by FROM contributions ct JOIN quests q ON q.id=ct.quest_id "
+                                 "WHERE ct.founder_no IS NOT NULL AND q.claimed_by IS NOT NULL GROUP BY ct.founder_no ORDER BY ct.founder_no").fetchall():
+            if kh and not c.execute("SELECT 1 FROM numbers WHERE n=? OR key_hash=?", (fno, kh)).fetchone():
+                try:
+                    assign_founder(c, kh, fno, now); n += 1
+                except ValueError:
+                    pass
     for kh, label in c.execute("SELECT key_hash, label FROM keys WHERE key_hash NOT IN (SELECT key_hash FROM numbers) ORDER BY created, rowid").fetchall():
         label = label or ""
         if not label.startswith(EXTERNAL_PREFIXES) or "stranger-probe" in label:
