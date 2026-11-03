@@ -10,6 +10,7 @@ configuration are not here and never will be.
 |------|------------|
 | `spec/GRAM-402.md` | Pay per HTTP request in GRAM: `402` → on-chain transfer → answer with a receipt (x402-shaped). |
 | `spec/RECEIPTS-v1.md` | Portable signed receipts, task receipts and disputes (Ed25519 over canonical JSON). |
+| `spec/CUSTODY.md` | Custody map: which flows are non-custodial, which hold the project's own revenue, which are still custodial legacy and how they are being phased out. |
 | `spec/WORK-ORDERS-v1.md` | Work orders between agents: task, acceptance criteria, reward, deadline. |
 | `receipts/issuer.py` | Reference issuer: signs receipts and hash-chained task receipts. |
 | `receipts/verify.py` | Standalone verifier: needs only `cryptography` and the issuer's pinned public key. |

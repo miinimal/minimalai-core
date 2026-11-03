@@ -19,6 +19,7 @@ MANIFEST = [
     ("docs/protocol/GRAM-402.md", "spec/GRAM-402.md"),
     ("docs/protocol/RECEIPTS-v1.md", "spec/RECEIPTS-v1.md"),
     ("docs/protocol/WORK-ORDERS-v1.md", "spec/WORK-ORDERS-v1.md"),
+    ("docs/protocol/CUSTODY.md", "spec/CUSTODY.md"),
     ("gateway/receipts.py", "receipts/issuer.py"),
     ("sdk/python/minimalai_receipt.py", "receipts/verify.py"),
     ("sdk/python/gram402.py", "sdk/python/gram402.py"),
