@@ -122,9 +122,29 @@ def mint_body(n, owner_wallet, query_id=0):
             .store_ref(init).end_cell())
 
 
+EXTERNAL_PREFIXES = ("signup:", "onboard:", "onboard-unverified:", "gram402:", "tg:", "agent:")
+
+
+def backfill(c, now=None):
+    """Agents registered before numbers existed get theirs in order of registration (idempotent; the project's own keys and
+    the weekly probe excluded). Returns how many were issued."""
+    c.executescript(SCHEMA)
+    if not c.execute("SELECT 1 FROM sqlite_master WHERE name='keys'").fetchone():
+        return 0
+    n = 0
+    for kh, label in c.execute("SELECT key_hash, label FROM keys WHERE key_hash NOT IN (SELECT key_hash FROM numbers) ORDER BY created, rowid").fetchall():
+        label = label or ""
+        if not label.startswith(EXTERNAL_PREFIXES) or "stranger-probe" in label:
+            continue
+        assign(c, kh, now)
+        n += 1
+    return n
+
+
 def setup(app, db, admin):
     with db() as c:
         c.executescript(SCHEMA)
+        backfill(c)
 
     @app.get("/v1/numbers")
     def numbers_index():
