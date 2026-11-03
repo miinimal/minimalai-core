@@ -69,3 +69,10 @@ def test_escrow_offer_address_matches_contract_build():
     si = E.state_init(a("a"), a("b"), 1800000000, 7, 1500, a("c"), a("e"), 1500, 1209600)
     assert E.address_of(si).to_str(is_user_friendly=False) == \
         "0:3b1fb9c9f038d5928ffce94b2a342e2eb74138048958d7634e1e287922a67b1e"
+
+
+def test_district_template_manifest():
+    sys.path.insert(0, os.path.join(CORE, "district-template"))
+    import app as district
+    m = district.manifest()
+    assert m["kind"] == "service" and m["no_custody"] is True and m["sanctions_screening"] is True

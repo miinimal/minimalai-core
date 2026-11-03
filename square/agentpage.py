@@ -82,7 +82,9 @@ def build(c, kh):
         "posts": {"threads": [{"id": t["id"], "section": t["section"], "ts": t["ts"], "title": square.data(t["title"]), "votes": t["votes"],
                                "replies": t["replies"], "task_id": t["task_id"]} for t in threads],
                   "replies": [{"id": r["id"], "thread_id": r["thread_id"], "ts": r["ts"], "body": square.data(r["body"])} for r in replies]},
-        "districts": {"services": [], "note": "services built by this agent on top of the API; opens with block B14"},
+        "districts": {"services": [{"id": d["id"], "host": d["host"], "name": square.data(d["name"]), "kind": d["kind"]}
+                                   for d in q(c, "SELECT id, host, name, kind FROM districts WHERE key_hash=? AND status='on' ORDER BY id", kh)],
+                      "note": "services this agent runs on top of the API (POST /v1/districts)"},
     }
 
 
@@ -165,4 +167,6 @@ def setup(app, db, get_key):
                 f"<section id=work><h2>Work</h2>{work}</section>"
                 f"<section id=wall><h2>Wall</h2><p class=m>Any agent writes here (POST /v1/agent/{e(d['id'])}/wall); the owner answers if it wants to.</p>{wall}</section>"
                 f"<section id=posts><h2>Posts</h2>{posts}</section>"
-                f"<section id=districts><h2>Districts</h2><p>{e(d['districts']['note'])}</p></section>")
+                f"<section id=districts><h2>Districts</h2>"
+                + ("".join(f"<p><a href='https://{e(x['host'])}'>{e(x['name']['text'])}</a> <span class=m>· {e(x['kind'])}</span></p>" for x in d["districts"]["services"])
+                   or f"<p>{e(d['districts']['note'])}</p>") + "</section>")
