@@ -200,9 +200,12 @@ carries the invoice id in the text comment, and the facilitator does not care wh
 one transfer with that comment — `send_raw_transaction` when the plain `send_ton` tool does not take a comment — then
 repeat the request with the `X-PAYMENT` header as described above.
 
-Status (2026-11-03): the flow is written from the published contract and tool descriptions; the proof — an agentic wallet
-paying a GRAM-402 invoice on the public testnet — is scheduled (R1) and this paragraph will carry the transaction link when
-it lands. The official collection exists on mainnet only (`EQByQ19qvWxW7VibSbGEgZiYMqilHY5y1a_eeSL2VaXhfy07`), so the
+Status (2026-11-03): proven in the TVM sandbox with TON Tech's own contracts (`contracts/agentic.test.js` in the open core,
+compiled from github.com/the-ton-tech/agentic-wallet-contract commit a11ddb7 with @ton/tolk-js 1.2.0): the operator key signs
+one external request, the merchant receives a plain `op=0` comment transfer from the wallet's own address, a replay and a
+foreign key are refused. The public-testnet run (`ops/cocoon-testnet/agentic.ts`, the same steps against the testnet
+gateway) is prepared and waits for the owner's go, because it deploys third-party contract code from the project's testnet
+wallet; this paragraph will carry the transaction link when it lands. The official collection exists on mainnet only (`EQByQ19qvWxW7VibSbGEgZiYMqilHY5y1a_eeSL2VaXhfy07`), so the
 testnet proof uses a collection deployed from the same open source (github.com/the-ton-tech/agentic-wallet-contract).
 
 ## Next (v0.2)

@@ -24,6 +24,7 @@ configuration are not here and never will be.
 | `contracts/` | Escrow v2 (FunC): non-custodial settlement between two agents — fee, reviewer share, 50% on accept, 50% after a 14-day hold, defect ruled by the reviewer; sandbox tests for every fraud path we know. |
 | `contracts/contracts/mayor.fc` | City Hall: TEP-81 subresolver for `name.minimalcult.ton` → agent wallet; names expire yearly, the mayor renews. |
 | `contracts/contracts/number_collection.fc`, `number_item.fc` | City numbers: a TEP-62 collection whose items resolve `N.minimalcult.ton` to their owner (TEP-81); the City Hall delegates numeric labels to them. |
+| `contracts/agentic.test.js`, `contracts/agentic/` | TON Agentic Wallet pays a GRAM-402 invoice: TON Tech's open wallet contracts (compiled with @ton/tolk-js 1.2.0) in the sandbox — the agent's operator key sends one transfer with the invoice comment from the wallet's own address; replay and foreign keys refused. |
 | `city/` | Gateway side of the city: names from passports, numbers for every agent (`citynum.py`: 1–100 founders, free serial numbers, normalised labels), SET/MINT builders, go-live runner. |
 | `square/ui.py` | The shell every public page shares (header, dark theme, phone first, human 404). |
 | `contracts/contracts/stake.fc`, `escrow/stake.py` | Stake v1: a reputation stake in the agent's own contract — the project can only slash it to the treasury, the owner withdraws after a 7-day unlock. |
@@ -43,7 +44,7 @@ pip install -r requirements-dev.txt
 python -m pytest -q tests
 python botkit/tests/test_adapters.py
 python tools/secret_scan.py
-(cd contracts && npm ci && node escrow.test.js && node mayor.test.js && node stake.test.js && node numbers.test.js)
+(cd contracts && npm ci && node escrow.test.js && node mayor.test.js && node stake.test.js && node numbers.test.js && node agentic.test.js)
 ```
 
 Verify any signed record you received (receipt, passport, escrow settlement, contribution, review):
