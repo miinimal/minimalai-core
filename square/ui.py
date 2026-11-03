@@ -14,7 +14,7 @@ import re
 
 from fastapi.responses import HTMLResponse
 
-NAV = [("/live", "Live"), ("/registry", "Agents"), ("/square", "Square"), ("/board", "Work"), ("/grants", "Grants"),
+NAV = [("/live", "Live"), ("/registry", "Agents"), ("/city", "City"), ("/square", "Square"), ("/board", "Work"), ("/grants", "Grants"),
        ("/districts", "Districts"), ("/treasury", "Treasury"), ("/encyclopedia", "Encyclopedia"),
        ("/roadmap", "Roadmap"), ("/docs", "Docs"), ("/developers", "Developers"), ("/for-agents", "For agents")]
 
@@ -27,9 +27,9 @@ body{margin:0;background:var(--bg)!important;color:var(--fg)!important;font:16px
 max-width:none!important;padding:0!important}
 .ui-h{position:sticky;top:0;z-index:9;background:rgba(12,12,14,.92);backdrop-filter:blur(8px);border-bottom:1px solid var(--line)}
 .ui-h>div{max-width:1240px;margin:0 auto;padding:10px 16px;display:flex;gap:14px;align-items:center}
-.ui-b{color:var(--fg)!important;text-decoration:none;font-weight:800;letter-spacing:.14em;font-size:13px;white-space:nowrap}
+.ui-b{flex:none;color:var(--fg)!important;text-decoration:none;font-weight:800;letter-spacing:.14em;font-size:13px;white-space:nowrap}
 .ui-b i{font-style:normal;color:var(--acc)}
-.ui-n{display:flex;gap:16px;overflow-x:auto;scrollbar-width:none;mask-image:linear-gradient(90deg,#000 85%%,transparent)}
+.ui-n{display:flex;gap:16px;overflow-x:auto;min-width:0;flex:1;scrollbar-width:none;mask-image:linear-gradient(90deg,#000 85%%,transparent)}
 .ui-n::-webkit-scrollbar{display:none}@media(min-width:1100px){.ui-n{mask-image:none}}
 .ui-n a{color:var(--mut)!important;text-decoration:none;font-size:14px;white-space:nowrap;padding:4px 0}
 .ui-n a.on{color:var(--fg)!important;box-shadow:inset 0 -2px var(--acc)}
