@@ -28,6 +28,8 @@ MANIFEST = [
     ("gateway/anchors.py", "receipts/anchors.py"),
     ("gateway/trust.py", "receipts/trust_index.py"),
     ("gateway/erc8004.py", "passport/erc8004.py"),
+    ("gateway/botauth.py", "passport/botauth.py"),
+    ("docs/protocol/BOT-AUTH.md", "spec/BOT-AUTH.md"),
     ("gateway/receipts.py", "receipts/issuer.py"),
     ("sdk/python/minimalai_receipt.py", "receipts/verify.py"),
     ("sdk/python/gram402.py", "sdk/python/gram402.py"),
