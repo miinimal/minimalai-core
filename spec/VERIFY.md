@@ -11,7 +11,9 @@ is anchored in TON with the next daily notary record. It is a RECEIPTS v2 record
 `POST /v1/verify` with the claim as the body. Pay with a key (`Authorization: Bearer mai-…`, 0.02 GRAM from the balance)
 or without a key through GRAM-402 (the first call answers `402` with an invoice; pay; repeat with `X-PAYMENT`). The price
 is a test price and is announced as such; competitors charge about 1 USDC per check (staff note, 2026-11-03 — to be
-confirmed at their sites before any public comparison). Nothing is charged when the outcome is `unverifiable`.
+confirmed at their sites before any public comparison). Nothing is charged when the outcome is `unverifiable`. The first
+three verifiable checks per key per UTC day are free (`free_checks_left_today` in every answer; `VERIFY_FREE_PER_DAY`), and the
+public sandbox `/testnet/v1/verify` runs the same code on test money at no cost — try before paying.
 
 | `type` | claim | `true` when |
 |---|---|---|

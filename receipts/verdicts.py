@@ -34,6 +34,7 @@ import receipts
 
 PRICE_NANO = int(os.environ.get("VERIFY_PRICE_NANO", "20000000"))   # 0.02 GRAM, test price
 PER_KEY_DAY = int(os.environ.get("VERIFY_PER_KEY_DAY", "200"))
+FREE_PER_DAY = int(os.environ.get("VERIFY_FREE_PER_DAY", "3"))   # B2: the first checks of the day cost nothing (adoption before price)
 TYPES = ("ton_transfer", "http_delivered", "message_sent", "receipt")
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS verdicts(id TEXT PRIMARY KEY, seq INTEGER, ts INTEGER, key_hash TEXT, type TEXT, result TEXT, claim_sha256 TEXT,
@@ -251,12 +252,15 @@ def setup(app, db, get_key, pay_gate):
         result, evidence, observed, assumed = await run_check(claim, getattr(app.state, "verify_fetch_txs", None), getattr(app.state, "verify_client", None))
         import starter
         with db() as c:
-            charge = PRICE_NANO if result != "unverifiable" else 0           # nothing checked, nothing charged
+            used = c.execute("SELECT count(*) FROM verdicts WHERE key_hash=? AND ts>? AND result!='unverifiable'", (kh, now - 86400)).fetchone()[0]
+            free_left = max(0, FREE_PER_DAY - used)
+            charge = PRICE_NANO if result != "unverifiable" and not free_left else 0   # nothing checked, nothing charged; the first FREE_PER_DAY a day are free
             if charge:
                 starter.spend(c, kh, charge, "verify")
             rec = make_verdict(c, claim, result, evidence, observed, assumed, kh, charge, now)
             left = c.execute("SELECT balance_nano FROM keys WHERE key_hash=?", (kh,)).fetchone()[0]
         out = {"verdict": rec, "result": result, "charged_nano": charge, "balance_left_nano": left,
+               "free_checks_left_today": max(0, free_left - (1 if result != "unverifiable" else 0)),
                "anchoring": "the verdict is in the notary queue; the chain head is written to TON once a day (GET /v1/notary/chain)",
                "lookup": f"GET /v1/verify/{rec['verdict_id']}"}
         if settlement:
@@ -270,6 +274,7 @@ def setup(app, db, get_key, pay_gate):
                 "types": {"ton_transfer": "{tx, to} or {to, amount_nano, comment, after_ts}", "http_delivered": "{url, expect{status, sha256, contains}}",
                           "message_sent": "{channel, message_id, contains}", "receipt": "{record}"},
                 "price_nano": PRICE_NANO, "price_note": "test price, announced as such; nothing is charged for an unverifiable outcome",
+                "free_per_day": FREE_PER_DAY, "free_note": f"the first {FREE_PER_DAY} verifiable checks per key per day are free; the sandbox (/testnet/v1/verify) is always free on test money",
                 "pay": "Bearer key, or GRAM-402: POST without a key -> 402 invoice -> pay -> repeat with X-PAYMENT",
                 "verdict": "RECEIPTS v2 record (kind verdict) with delivery and distrust blocks; anchored in TON with the daily notary record",
                 "chain": "GET /v1/verify/chain", "docs": "https://ai.minimalcult.org/docs/verify"}
