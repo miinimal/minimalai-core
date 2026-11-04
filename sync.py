@@ -29,6 +29,7 @@ MANIFEST = [
     ("gateway/verify.py", "receipts/verdicts.py"),
     ("gateway/anchors.py", "receipts/anchors.py"),
     ("gateway/witness.py", "witness/recorder.py"),
+    ("gateway/witness_check.py", "witness/check.py"),
     ("gateway/trust.py", "receipts/trust_index.py"),
     ("gateway/erc8004.py", "passport/erc8004.py"),
     ("gateway/botauth.py", "passport/botauth.py"),
