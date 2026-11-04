@@ -89,6 +89,9 @@ SOURCES = [
     ("json:devpost", "json_count", "https://devpost.com/api/hackathons?status[]=open&order_by=deadline|hackathons", "Devpost open hackathons"),
     ("gh:gitcoinco/grants-stack", "github_release", "gitcoinco/grants-stack", "Gitcoin grants stack"),
     ("html:ethglobal", "html_match", "https://ethglobal.com/events|(/events/[a-z0-9-]+)", "ETHGlobal events"),
+    # block J: robots x MINIMAL AI (weekly research docs/research/ROBOTS.md reads these)
+    ("gh:openmind/om1", "github_release", "openmind/om1", "robots: OpenMind OM1 (robots paying via x402)"),
+    ("html:peaq-blog", "html_match", "https://www.peaq.xyz/blog|href=\"(/blog/[a-z0-9-]+)\"", "robots: peaq machine economy blog"),
 ]
 # not sensed (checked on production 2026-11-04): xAI changelog (404), Meta AI RSS (404), PulseMCP v0beta (410 Gone), DoraHacks (405 to non-browsers); no public feed found:
 # Fabrika AI, "@agent" beta leaks; Glama and Smithery counts need an API key.
