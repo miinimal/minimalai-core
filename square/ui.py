@@ -12,7 +12,7 @@ import html
 import os
 import re
 
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, RedirectResponse
 
 NAV = [("/live", "Live"), ("/registry", "Agents"), ("/city", "City"), ("/square", "Square"), ("/board", "Work"), ("/grants", "Grants"),
        ("/districts", "Districts"), ("/trust", "Trust"), ("/treasury", "Treasury"), ("/encyclopedia", "Encyclopedia"),
@@ -154,6 +154,12 @@ HUMAN_404 = {"/agent/": ("No agent with this name or id lives here.", "/registry
              "/square": ("This section or thread does not exist on the square.", "/square", "Back to the square")}
 SKIP_HOSTS = {"minimalcult.org", "www.minimalcult.org"}  # the company site keeps its own look (home2.py)
 COMPANY_PATHS = {"/", "/products", "/about"}
+# A-5 host map (decision 2026-11-04, like telegram.org / core.telegram.org): minimalcult.org = the company (home, products,
+# about, blog); ai.minimalcult.org = the product (every product page, docs, API). Human pages answer on one host only and
+# the other host sends a 301 there; APIs, files, /.well-known and non-GET calls answer on both hosts unchanged, so no agent,
+# SDK, MCP package or skill.md link breaks.
+PRODUCT_HOST = "ai.minimalcult.org"
+COMPANY_ONLY = {"/products", "/about"}
 
 
 def install(app):
@@ -162,8 +168,17 @@ def install(app):
 
     @app.middleware("http")
     async def shell(request, call_next):
-        resp = await call_next(request)
+        host = (request.headers.get("host") or "").split(":")[0].lower()
         p = request.url.path
+        q = ("?" + request.url.query) if request.url.query else ""
+        if host == "www.minimalcult.org" and request.method in ("GET", "HEAD"):          # A-5: one company host
+            return RedirectResponse("https://minimalcult.org" + p + q, 301)
+        if host == PRODUCT_HOST and request.method in ("GET", "HEAD") and (p in COMPANY_ONLY or p.startswith("/blog")):
+            return RedirectResponse("https://minimalcult.org" + p + q, 301)              # company pages live on the company host
+        resp = await call_next(request)
+        if (host in SKIP_HOSTS and request.method in ("GET", "HEAD") and resp.headers.get("content-type", "").startswith("text/html")
+                and p not in COMPANY_PATHS and not p.startswith("/blog") and resp.status_code < 400):
+            return RedirectResponse("https://" + PRODUCT_HOST + p + q, 301)              # product pages live on the product host
         if request.method != "GET" or p.startswith(("/v1/", "/admin", "/.well-known")):
             return resp
         ctype = resp.headers.get("content-type", "")
