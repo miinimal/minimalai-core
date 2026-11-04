@@ -51,7 +51,7 @@ def numbers(c, now=None):
         if b:
             d["anchors"] = [{"kind": p["kind"], "status": p["status"]} for p in c.execute("SELECT kind, status FROM anchor_proofs WHERE batch_id=?", (b["id"],))]
             d["last_batch"] = {"id": b["id"], "ts": b["ts"]}
-    d["identities"] = {"passports": q("SELECT count(*) FROM passports") if has("passports") else 0,
+    d["identities"] = {"passports": q("SELECT count(*) FROM passports WHERE coalesce(is_test,0)=0") if has("passports") else 0,
                        "erc8004_linked": (q("SELECT count(*) FROM passports WHERE erc8004 IS NOT NULL") if has("passports") and "erc8004" in [r[1] for r in c.execute("PRAGMA table_info(passports)")] else 0),
                        "wallet_proven": q("SELECT count(*) FROM passports WHERE wallet_verified=1") if has("passports") and "wallet_verified" in [r[1] for r in c.execute("PRAGMA table_info(passports)")] else 0}
     d["agents_with_receipts"] = q("SELECT count(DISTINCT worker) FROM task_receipts")

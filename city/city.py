@@ -119,9 +119,9 @@ def setup(app, db):
         """The city: how name.minimalcult.ton resolves and what is registered."""
         with db() as c:
             migrate(c)   # passports table is created by passport2.py, mounted after this module
-            n_all = c.execute("SELECT count(*) FROM passports WHERE city_name IS NOT NULL").fetchone()[0]
-            n_wallet = c.execute("SELECT count(*) FROM passports WHERE city_name IS NOT NULL AND wallet IS NOT NULL").fetchone()[0]
-            n_chain = c.execute("SELECT count(*) FROM passports WHERE city_registered=1").fetchone()[0]
+            n_all = c.execute("SELECT count(*) FROM passports WHERE city_name IS NOT NULL AND coalesce(is_test,0)=0").fetchone()[0]
+            n_wallet = c.execute("SELECT count(*) FROM passports WHERE city_name IS NOT NULL AND wallet IS NOT NULL AND coalesce(is_test,0)=0").fetchone()[0]
+            n_chain = c.execute("SELECT count(*) FROM passports WHERE city_registered=1 AND coalesce(is_test,0)=0").fetchone()[0]
             pend = len(pending(c))
         m = mayor_address()
         return {"parent": PARENT, "network": NETWORK, "contract": CONTRACT or None, "mayor": m,

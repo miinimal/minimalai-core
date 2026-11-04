@@ -12,6 +12,7 @@ Every agent receives a serial number N: `N.minimalcult.ton` in the city and `/a/
 NFT subdomains (TEP-62 item per number) are the second part of the block: contract work and a cost measurement on testnet.
 Author: Aleksandr Shcherbakov (@miinimal) - MINIMALCULT.
 """
+import testmark
 import os
 import re
 import time
@@ -143,7 +144,7 @@ def backfill(c, now=None):
                     pass
     for kh, label in c.execute("SELECT key_hash, label FROM keys WHERE key_hash NOT IN (SELECT key_hash FROM numbers) ORDER BY created, rowid").fetchall():
         label = label or ""
-        if not label.startswith(EXTERNAL_PREFIXES) or "stranger-probe" in label:
+        if not label.startswith(EXTERNAL_PREFIXES) or "stranger-probe" in label or testmark.name_is_test(label):
             continue
         assign(c, kh, now)
         n += 1
