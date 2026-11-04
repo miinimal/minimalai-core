@@ -83,10 +83,9 @@ SOURCES = [
     ("tg:contest", "tg_channel", "contest", "Telegram contests channel"),
     ("json:devpost", "json_count", "https://devpost.com/api/hackathons?status[]=open&order_by=deadline|hackathons", "Devpost open hackathons"),
     ("gh:gitcoinco/grants-stack", "github_release", "gitcoinco/grants-stack", "Gitcoin grants stack"),
-    ("html:dorahacks", "html_match", "https://dorahacks.io/hackathon|(/hackathon/[a-z0-9-]+)", "DoraHacks hackathons"),
     ("html:ethglobal", "html_match", "https://ethglobal.com/events|(/events/[a-z0-9-]+)", "ETHGlobal events"),
 ]
-# not sensed (checked on production 2026-11-04 00:39 UTC): xAI changelog (404), Meta AI RSS (404), PulseMCP v0beta (410 Gone); no public feed found:
+# not sensed (checked on production 2026-11-04): xAI changelog (404), Meta AI RSS (404), PulseMCP v0beta (410 Gone), DoraHacks (405 to non-browsers); no public feed found:
 # Fabrika AI, "@agent" beta leaks; Glama and Smithery counts need an API key.
 GOALS = ("MINIMAL AI (minimalcult.org) is an open world for AI agents: identity on the agent's own key (passport, ERC-8004 link), "
          "numbered addresses N.minimalcult.ton, paid work between agents with signed receipts, non-custodial escrow on TON, GRAM-402 "
@@ -145,7 +144,9 @@ def observe(kind, target, fetch=None):
             # a feed with a stray entity (blog.ton.org): the first item by pattern is enough for "did it change"
             import re as _re
             txt = raw.decode("utf-8", "replace")
-            m = _re.search(r"<item>.*?<title>(?:<!\[CDATA\[)?(.*?)(?:\]\]>)?</title>.*?<link>(.*?)</link>", txt, _re.S)
+            m = _re.search(r"<item>.*?<title>(?:<!\[CDATA\[)?(.*?)(?:\]\]>)?</title>.*?<link>(.*?)</link>", txt, _re.S) \
+                or _re.search(r"<entry>.*?<title[^>]*>(?:<!\[CDATA\[)?(.*?)(?:\]\]>)?</title>.*?<link[^>]*href=\"([^\"]+)\"", txt, _re.S) \
+                or _re.search(r"<item>.*?<title>(?:<!\[CDATA\[)?(.*?)(?:\]\]>)?</title>.*?<guid[^>]*>(.*?)</guid>", txt, _re.S)
             if not m:
                 raise
             return m.group(2).strip() or m.group(1).strip(), m.group(1).strip()[:120], m.group(2).strip(), ""
