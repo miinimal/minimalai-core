@@ -69,10 +69,14 @@ def _object_facts(c, oid, now):
     o = c.execute("SELECT * FROM w_objects WHERE id=?", (oid,)).fetchone()
     if not o:
         return None
-    facts = {"object": oid, "record_id": W.rec_id(oid), "record_url": f"{BASE}/v1/records/{W.rec_id(oid)}", "witnessed_since": W.iso(o["first_seen"]), "last_seen": W.iso(o["last_seen"]), "versions": o["versions"],
-             "latest": o["latest"], "registry_status": o["status"], "history": _href(oid)}
-    ch = c.execute("SELECT c.seq, c.ts, c.what, o.kind FROM w_changes c JOIN w_obs o ON o.seq=c.seq WHERE c.object=? AND c.ts>? ORDER BY c.seq DESC LIMIT 20",
-                   (oid, now - RECENT_S)).fetchall()
+    st = W.state_at(c, oid, now)              # PIT: everything as it stood at `now` (the check time, or the as_of asked for)
+    if not st["on_record"]:
+        return None
+    facts = {"object": oid, "record_id": W.rec_id(oid), "record_url": f"{BASE}/v1/records/{W.rec_id(oid)}", "witnessed_since": st["first_observed_at"],
+             "last_seen": W.iso(min(o["last_seen"], now)), "versions": len(st["versions"]), "latest": st["latest_version"] or o["latest"],
+             "registry_status": st["registry_status"], "history": _href(oid)}
+    ch = c.execute("SELECT c.seq, c.ts, c.what, o.kind FROM w_changes c JOIN w_obs o ON o.seq=c.seq WHERE c.object=? AND c.ts>? AND c.ts<=? ORDER BY c.seq DESC LIMIT 20",
+                   (oid, now - RECENT_S, now)).fetchall()
     changes = [{"what": r["what"], "kind": r["kind"], "at": W.iso(r["ts"]), "diff": f"{BASE}/v1/witness/diff?seq={r['seq']}"} for r in ch]
     return o, facts, changes
 
@@ -85,22 +89,23 @@ def check_mcp_tool(c, target, now):
                                                                    "fact": "this name is not in the witness record; the record follows the official MCP Registry"}]
     o, facts, changes = got
     flags = []
-    if o["status"] and o["status"] != "active":
-        flags.append({"code": f"registry_{o['status']}", "severity": "warn", "fact": f"the official MCP Registry marks this server {o['status']}"})
-    tools = c.execute("SELECT * FROM w_obs WHERE object=? AND kind='tools' ORDER BY seq DESC LIMIT 1", ("mcp:" + name,)).fetchone()
+    rs = facts["registry_status"]
+    if rs and rs != "active":
+        flags.append({"code": f"registry_{rs}", "severity": "warn", "fact": f"the official MCP Registry marks this server {rs}"})
+    tools = c.execute("SELECT * FROM w_obs WHERE object=? AND kind='tools' AND observed_at<=? ORDER BY seq DESC LIMIT 1", ("mcp:" + name, now)).fetchone()
     if tools:
         facts["tool_descriptions"] = {**_obs_ref(tools), "count": (json.loads(tools["record"]).get("meta") or {}).get("count")}
     else:
         facts["tool_descriptions"] = None
         flags.append({"code": "tools_not_read", "severity": "info", "fact": "no public tool list recorded (no public endpoint, auth required, or not read yet)"})
-    man = c.execute("SELECT * FROM w_obs WHERE object=? AND kind='manifest' ORDER BY seq DESC LIMIT 1", ("mcp:" + name,)).fetchone()
+    man = c.execute("SELECT * FROM w_obs WHERE object=? AND kind='manifest' AND observed_at<=? ORDER BY seq DESC LIMIT 1", ("mcp:" + name, now)).fetchone()
     if man:
         facts["registry_entry"] = _obs_ref(man)
         pk = []
         for p in (W.body_of(man) or {}).get("packages") or []:
             reg, ident, ver = (p.get("registryType") or "").lower(), p.get("identifier"), str(p.get("version") or "")
             if reg in ("npm", "pypi") and ident:
-                r = c.execute("SELECT * FROM w_obs WHERE object=? AND kind='package' AND version=? ORDER BY seq DESC LIMIT 1", (f"{reg}:{ident}", ver)).fetchone()
+                r = c.execute("SELECT * FROM w_obs WHERE object=? AND kind='package' AND version=? AND observed_at<=? ORDER BY seq DESC LIMIT 1", (f"{reg}:{ident}", ver, now)).fetchone()
                 pk.append({"package": f"{reg}:{ident}", "version": ver, "recorded": _obs_ref(r) if r else None,
                            "hashes": _hashes(W.body_of(r)) if r else None})
         facts["packages"] = pk
@@ -127,8 +132,8 @@ def check_package(c, target, now, version=None, sha256=None, integrity=None, sha
         return "not_witnessed", {"object": target}, [], [{"code": "not_in_record", "severity": "info",
                                                           "fact": "the record holds the npm and PyPI packages that MCP Registry entries point to; this one is not among them (yet)"}]
     o, facts, changes = got
-    ver = version or o["latest"]
-    r = c.execute("SELECT * FROM w_obs WHERE object=? AND kind='package' AND version=? ORDER BY seq DESC LIMIT 1", (target, ver)).fetchone()
+    ver = version or facts["latest"]
+    r = c.execute("SELECT * FROM w_obs WHERE object=? AND kind='package' AND version=? AND observed_at<=? ORDER BY seq DESC LIMIT 1", (target, ver, now)).fetchone()
     flags, status = [], ("changed_recently" if changes else "witnessed")
     if not r:
         facts["version"] = ver
@@ -182,6 +187,8 @@ def check_ton_address(target):
 
 def run(c_w, claim, now):
     t, target = claim["type"], claim["target"]
+    if claim.get("as_of"):
+        now = W.parse_time(claim["as_of"])
     if t == "model_endpoint":
         raise HTTPException(400, "model_endpoint: planned (Witness Certificate, model identity index); not checked yet")
     if t == "ton_address":
@@ -206,6 +213,16 @@ def clean(b):
         v = b.get(k)
         if v:
             out[k] = str(v).strip()[:200]
+    if b.get("as_of"):                         # PIT: the check as it would have answered at that moment
+        try:
+            t = W.parse_time(b["as_of"])
+        except (ValueError, TypeError):
+            raise HTTPException(400, "as_of: an RFC 3339 time with a zone, e.g. 2026-11-04T21:00:00Z")
+        if t > time.time() + 60:
+            raise HTTPException(400, "as_of is in the future")
+        if out["type"] == "ton_address":
+            raise HTTPException(400, "as_of is not available for ton_address (the sanctions list keeps no history here)")
+        out["as_of"] = W.iso(t)
     return out
 
 

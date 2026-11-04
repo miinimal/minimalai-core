@@ -132,12 +132,26 @@ def setup(app, db):
         return {"object": "list", "url": f"/v1/records/{rid_}/versions", "has_more": len(rows) > limit, "data": [_version(r, rid_) for r in rows[:limit]]}
 
     @app.get("/v1/records/{rid:path}")
-    def record(rid: str):
+    def record(rid: str, as_of: str = ""):
         with ro() as c:
             o = _resolve(c, rid)
             if not o:
                 raise ApiError(404, "invalid_request_error", "record_not_found", "no record with this id", "find it with GET /v1/records?query=")
             out = _record(o)
+            if as_of:                       # PIT: the record as it stood at that moment (free to view)
+                try:
+                    t = W.parse_time(as_of)
+                except (ValueError, TypeError):
+                    raise ApiError(400, "invalid_request_error", "invalid_as_of", "as_of is an RFC 3339 time with a zone", "send as_of=2026-11-04T21:00:00Z")
+                st = W.state_at(c, o["id"], t)
+                base = {"id": out["id"], "object": "record_state", "name": out["name"], "source_id": out["source_id"], "as_of": W.iso(t)}
+                if not st["on_record"]:
+                    return {**base, "on_record": False, "first_observed_at": st["first_observed_at"],
+                            "message": f"not on record at {W.iso(t)}; first observed at {st['first_observed_at']}"}
+                return {**base, "on_record": True, "on_record_since": st["first_observed_at"], "latest_version": st["latest_version"],
+                        "versions_known": len(st["versions"]), "registry_status": st["registry_status"], "last_seal_before": st["last_seal_before"],
+                        "facts": [_version(r, out["id"]) for r in st["facts"].values()],
+                        "statement_url": f"{BASE}/v1/records/{out['id']}/statements?as_of={W.iso(t)}"}
             last = c.execute("SELECT * FROM w_obs WHERE object=? ORDER BY seq DESC LIMIT 1", (o["id"],)).fetchone()
             out["latest_fact"] = _version(last, out["id"]) if last else None
         return out

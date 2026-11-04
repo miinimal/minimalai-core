@@ -796,8 +796,11 @@ def main():
 
 def sensors(now, path=None, data_dir=None):
     """CAP-1 alarms for nerves.sensors (importance 8 wakes the owner): disk or memory at 70%, an hour without a seal,
-    an anchor that failed on a sealed batch. Reads the record without writing."""
+    an anchor that failed on a sealed batch. Reads the record without writing. WITNESS_SENSORS=0 turns them off (tests of
+    other sensors must not depend on the disk and memory of the machine they run on)."""
     out = []
+    if os.environ.get("WITNESS_SENSORS", "1") != "1":
+        return out
     try:
         st = os.statvfs(data_dir or DATA_DIR)
         used = 1 - st.f_bavail / st.f_blocks
@@ -973,6 +976,60 @@ def proof(c, seq):
         "head = sha256(canonical JSON of batch.record) — equals batch.head; batch.signature is the hybrid gateway signature: Ed25519 over the record "
         "without 'sig', ML-DSA-65 (FIPS 204) in `pq` over the record without 'sig' and 'pq' (keys: /.well-known/minimalai.json)",
         "each anchor fixes the 32 head bytes: OpenTimestamps (`ots verify`), RFC 3161 (`openssl ts -verify`), Sigstore Rekor (entry hash = sha256 of the head bytes); the daily batch at /v1/anchors adds TON and EAS"]
+    return out
+
+
+# ---------------------------------------------------------------- Point-in-Time (PIT): the record as it stood at a moment
+STATE_KINDS = ("manifest", "status", "package", "tools")
+
+
+def parse_time(v):
+    """RFC 3339 (2026-11-04T21:00:00Z, offsets allowed) or unix seconds -> int seconds; ValueError otherwise."""
+    import datetime
+    v = str(v).strip()
+    if v.isdigit():
+        return int(v)
+    d = datetime.datetime.fromisoformat(v.replace("Z", "+00:00"))
+    if d.tzinfo is None:
+        raise ValueError("as_of needs a time zone (use Z for UTC)")
+    return int(d.timestamp())
+
+
+def state_at(c, obj, as_of):
+    """What the record held about `obj` at `as_of`: the latest fact of each kind observed at or before it, the versions known,
+    and which of those facts were already sealed by then. None when the object was first observed after `as_of`."""
+    first = c.execute("SELECT min(observed_at) FROM w_obs WHERE object=?", (obj,)).fetchone()[0]
+    if first is None or first > as_of:
+        return {"on_record": False, "first_observed_at": iso(first) if first else None}
+    facts = {}
+    for k in STATE_KINDS:
+        r = c.execute("SELECT * FROM w_obs WHERE object=? AND kind=? AND observed_at<=? ORDER BY seq DESC LIMIT 1", (obj, k, as_of)).fetchone()
+        if r:
+            facts[k] = r
+    versions = [r[0] for r in c.execute("SELECT DISTINCT version FROM w_obs WHERE object=? AND kind IN ('manifest','package') AND observed_at<=? ORDER BY seq",
+                                        (obj, as_of)).fetchall()]
+    sealed_upto = c.execute("SELECT max(ts) FROM w_batches WHERE ts<=?", (as_of,)).fetchone()[0]
+    return {"on_record": True, "first_observed_at": iso(first), "facts": facts, "versions": versions,
+            "latest_version": facts["manifest"]["version"] if "manifest" in facts else (facts["package"]["version"] if "package" in facts else None),
+            "registry_status": (body_of(facts["status"]) or {}).get("status") if "status" in facts else ("active" if "manifest" in facts else None),
+            "last_seal_before": iso(sealed_upto) if sealed_upto else None}
+
+
+def fact_proof(c, r, cache=None):
+    """Everything needed to check one fact without us: the observation, its leaf, the Merkle path, the batch record, its head,
+    signature and anchors. A fact not sealed yet has no batch (sealed within the hour). `cache` keeps a batch's leaves
+    between facts of one statement (the first batch holds the whole backfill)."""
+    import notary
+    out = {"observation": json.loads(r["record"]), "leaf": r["leaf"], "batch": None}
+    if r["batch_id"]:
+        b = c.execute("SELECT * FROM w_batches WHERE id=?", (r["batch_id"],)).fetchone()
+        cache = {} if cache is None else cache
+        if b["id"] not in cache:
+            cache[b["id"]] = [x["leaf"] for x in c.execute("SELECT leaf FROM w_obs WHERE batch_id=? ORDER BY seq", (b["id"],)).fetchall()]
+        leaves = cache[b["id"]]
+        out["merkle_path"] = notary.merkle_proof(leaves, leaves.index(r["leaf"]))
+        out["batch"] = {"id": b["id"], "record": json.loads(b["record"]), "head": b["head"], "signature": json.loads(b["sig"]) if b["sig"] else None,
+                        "anchors": anchors_of(c, b["id"])}
     return out
 
 

@@ -38,7 +38,8 @@ TOOLS = [
          "type": {"type": "string", "enum": TYPES},
          "target": {"type": "string", "description": "registry name (io.github.owner/server), npm:<name> or pypi:<name>, https URL, or TON address"},
          "version": {"type": "string"}, "sha256": {"type": "string", "description": "sha256 of the PyPI file you are about to install"},
-         "integrity": {"type": "string", "description": "npm dist.integrity of the tarball you are about to install"}}},
+         "integrity": {"type": "string", "description": "npm dist.integrity of the tarball you are about to install"},
+         "as_of": {"type": "string", "description": "RFC 3339 time: answer as the record stood at that moment"}}},
      "annotations": {"readOnlyHint": True, "openWorldHint": True}},
     {"name": "record_search", "title": "Search the record",
      "description": "Find records of MCP servers and npm/PyPI packages by name or words; returns rec_ ids, on-record-since dates, latest versions.",
@@ -157,7 +158,7 @@ def setup(app, client_ip):
                     raise ToolError(f"type is one of {', '.join(TYPES)}")
                 from fastapi import HTTPException
                 try:
-                    ctx = await WC.setup.perform(request, {k: args[k] for k in ("type", "target", "version", "sha256", "integrity") if args.get(k)}, "/mcp")
+                    ctx = await WC.setup.perform(request, {k: args[k] for k in ("type", "target", "version", "sha256", "integrity", "as_of") if args.get(k)}, "/mcp")
                 except HTTPException as e:
                     raise ToolError(str(e.detail))
                 if isinstance(ctx, JSONResponse):
