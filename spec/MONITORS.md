@@ -50,5 +50,6 @@ in a row is paused. Webhook hosts must be public https; redirects are not follow
 
 ## Price
 
-Three monitors per key or address are free. More: 1 USD per monitor per 30 days, USDC on Base through x402 at
-`GET /base/monitors?record=<id>&url=<webhook>`.
+Three monitors per key or address are free. More: 1 USD per monitor per 30 days — from the key's USD credit or GRAM balance at
+the rate of the moment, or USDC on Base through x402 at `GET /base/monitors?record=<id>&url=<webhook>`. Delivery health of our
+own monitor on every change is public at `GET /v1/monitors/_selftest`.

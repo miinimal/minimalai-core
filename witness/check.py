@@ -23,7 +23,7 @@ queued for the daily TON notary record. `status` is a fact class, never a judgem
   hash_mismatch      the hash you gave differs from the hash we recorded for that version
   not_witnessed      not in the record (yet): no history is not a verdict
   sanctions_listed / not_listed   (ton_address)
-Price: the first FREE_PER_DAY checks per key (or per address without a key) each day are free; then CHECK_PRICE_NANO from
+Price: the first FREE_PER_DAY checks per key (or per address without a key) each day are free; then the USD price (prices.py) from
 the key balance, or GRAM-402 without a key (the payment above the price stays as credit for more checks). Test price,
 announced as such. x402 USDC on Base: block G2.
 Author: Aleksandr Shcherbakov (@miinimal) - MINIMALCULT. License: MIT (open core).
@@ -42,7 +42,6 @@ import receipts
 import witness as W
 
 FREE_PER_DAY = int(os.environ.get("CHECK_FREE_PER_DAY", "100"))
-CHECK_PRICE_NANO = int(os.environ.get("CHECK_PRICE_NANO", "5000000"))      # 0.005 GRAM, test price
 PER_ID_DAY = int(os.environ.get("CHECK_PER_ID_DAY", "20000"))
 RECENT_S = 30 * 86400
 TYPES = ("mcp_server", "mcp_tool", "package", "url", "ton_address", "model_endpoint")   # mcp_tool: alias of mcp_server
@@ -286,7 +285,8 @@ def setup(app, db, get_key, pay_gate, client_ip, h):
             key = get_key(auth)
             payer = "key:" + key["key_hash"]
         elif request.headers.get("x-payment"):
-            gate = await pay_gate(request, b, route, CHECK_PRICE_NANO)
+            import prices
+            gate = await prices.gram_gate(pay_gate, db, request, b, route, "check")
             if isinstance(gate, JSONResponse):
                 return gate
             key, settlement = gate
@@ -301,7 +301,8 @@ def setup(app, db, get_key, pay_gate, client_ip, h):
         paid = bool(b.get("pay")) or settlement is not None or bool(paid_ext)   # a buyer can ask for a paid check (catalogues, its own books)
         free_left = 0 if paid else max(0, FREE_PER_DAY - used)
         if not free_left and key is None and not paid_ext:
-            return await pay_gate(request, b, route, CHECK_PRICE_NANO)   # over the free threshold without a key: GRAM-402
+            import prices
+            return await prices.gram_gate(pay_gate, db, request, b, route, "check")   # over the free threshold without a key: GRAM-402
         cw = W.open_ro()
         try:
             status, facts, changes, flags = run(cw, claim, now)
@@ -317,9 +318,10 @@ def setup(app, db, get_key, pay_gate, client_ip, h):
             if paid_ext:
                 price = {"amount": paid_ext["amount"], "currency": paid_ext["currency"], "via": paid_ext["via"]}
             elif not free_left and status != "unverifiable":
-                import starter
-                starter.spend(c, key["key_hash"], CHECK_PRICE_NANO, "witness_check")
-                price = {"amount": CHECK_PRICE_NANO, "currency": "gram", "unit": "nano", "via": "gram-402" if settlement else "key_balance"}
+                import prices
+                price = prices.charge_key(c, key["key_hash"], "check")       # PAY: USD price; USD credit first, else GRAM at the rate
+                if settlement and price["via"] == "key_balance":
+                    price["via"] = "gram-402"
             rec = record(c, claim, status, facts, changes, flags, payer, price, head, now)
             left = c.execute("SELECT balance_nano FROM keys WHERE key_hash=?", (key["key_hash"],)).fetchone()[0] if key else None
         return {"rec": rec, "status": status, "flags": flags, "price": price, "free_left": max(0, free_left - 1) if not paid else 0,
@@ -376,8 +378,9 @@ def about():
             "types": {"mcp_server": "target=io.github.owner/server (alias mcp_tool)", "package": "target=npm:<name>|pypi:<name>, version, sha256|integrity|shasum",
                       "url": "target=https://<MCP remote>", "ton_address": "target=<address>", "model_endpoint": "planned"},
             "statuses": ["witnessed", "changed_recently", "hash_mismatch", "not_witnessed", "sanctions_listed", "not_listed", "unverifiable"],
-            "free_per_day": FREE_PER_DAY, "price": {"amount": CHECK_PRICE_NANO, "currency": "gram", "unit": "nano"},
-            "price_note": "test price, announced as such; the first checks of each day are free per key, or per address without a key",
+            "free_per_day": FREE_PER_DAY, "price": {"amount": __import__("prices").PRICES["check"][0], "currency": "usd", "unit": "micro"},
+            "prices": f"{BASE}/v1/prices",
+            "price_note": "set in USD; GRAM at the rate of the moment (+markup), locked 15 minutes in the invoice; the first checks of each day are free",
             "pay": "Bearer key (balance), GRAM-402 (402 -> pay -> repeat with X-PAYMENT), or x402 USDC on Base at /base/checks; "
                    "\"pay\": true asks for a paid check within the free threshold",
             "create": "POST /v1/checks {\"type\": \"mcp_server\", \"target\": \"io.github.github/github-mcp-server\"}",

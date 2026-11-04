@@ -44,4 +44,5 @@ Rekor; the proof files are public at the `proof_url` of each anchor.
 
 ## Price
 
-0.05 GRAM (key balance or GRAM-402) or 0.10 USD in USDC on Base (x402). Viewing the state at a moment is free.
+0.10 USD (`GET /v1/prices`): prepaid USD credit, USDC on Base through x402, or GRAM at the rate of the moment plus 3%
+(locked 15 minutes). Viewing the state at a moment is free.

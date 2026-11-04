@@ -9,7 +9,8 @@ A statement is checkable without us: `python -m minimalcult verify statement.jso
 hybrid signature, each leaf, each Merkle path, each batch head and batch signature, and that every fact was observed at or
 before `as_of`; the anchors fix the batch heads in Bitcoin (OpenTimestamps), an RFC 3161 TSA and Sigstore Rekor.
 Before the first observation the answer says so, with the date of the first observation, and nothing is charged.
-Price (docs/DECISIONS.md): STATEMENT_PRICE_NANO from a key balance or through GRAM-402; USDC through x402 at /base/statements.
+Price: set in USD (prices.py, 0.10 USD): USD credit or a GRAM key balance at the rate of the moment, GRAM-402 (locked 15 min),
+or USDC through x402 at /base/statements.
 Author: Aleksandr Shcherbakov (@miinimal) - MINIMALCULT. License: Apache-2.0 (open core).
 """
 import json
@@ -23,7 +24,6 @@ from fastapi.responses import JSONResponse, Response
 import receipts
 import witness as W
 
-STATEMENT_PRICE_NANO = int(os.environ.get("STATEMENT_PRICE_NANO", "50000000"))   # 0.05 GRAM, starting price (DECISIONS 2026-11-04)
 BASE = "https://ai.minimalcult.org"
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS statements(id TEXT PRIMARY KEY, ts INTEGER, record TEXT, as_of INTEGER, payer TEXT, price TEXT, sha256 TEXT, body TEXT);
@@ -153,6 +153,7 @@ def setup(app, db, get_key, pay_gate, client_ip, h):
 
     async def charge(request, b, route):
         """x402 (basepay internal key) | key balance | GRAM-402. Returns (payer, price) or a JSONResponse (402)."""
+        import prices
         ext = WC.internal_payment(request)
         if ext:
             return "x402:" + (ext["payer"] or "anonymous"), {"amount": ext["amount"], "currency": ext["currency"], "via": ext["via"]}, None
@@ -160,21 +161,21 @@ def setup(app, db, get_key, pay_gate, client_ip, h):
         if auth:
             key = get_key(auth)
         elif request.headers.get("x-payment"):
-            gate = await pay_gate(request, b, route, STATEMENT_PRICE_NANO)
+            gate = await prices.gram_gate(pay_gate, db, request, b, route, "statement")
             if isinstance(gate, JSONResponse):
                 return gate
             key, settlement = gate
         else:
-            return await pay_gate(request, b, route, STATEMENT_PRICE_NANO)
-        import starter
+            return await prices.gram_gate(pay_gate, db, request, b, route, "statement")
         with db() as c:
             try:
-                starter.spend(c, key["key_hash"], STATEMENT_PRICE_NANO, "statement")
+                price = prices.charge_key(c, key["key_hash"], "statement")     # PAY: USD price; USD credit first, else GRAM at the rate
             except HTTPException:
                 raise RA.ApiError(402, "payment_error", "balance_too_low", "the key balance does not cover a statement",
-                                  "top up the key, pay without a key (GRAM-402), or pay USDC at /base/statements")
-        return "key:" + key["key_hash"], {"amount": STATEMENT_PRICE_NANO, "currency": "gram", "unit": "nano",
-                                          "via": "gram-402" if settlement else "key_balance"}, settlement
+                                  "top up the key (USD credit packs at /pricing), pay without a key (GRAM-402), or pay USDC at /base/statements")
+        if settlement and price["via"] == "key_balance":
+            price["via"] = "gram-402"
+        return "key:" + key["key_hash"], price, settlement
 
     @app.get("/v1/records/{rid:path}/statements/{sid}")
     def statement_get(rid: str, sid: str, format: str = "json"):

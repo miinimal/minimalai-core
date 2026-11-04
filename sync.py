@@ -34,6 +34,7 @@ MANIFEST = [
     ("gateway/mcp_server.py", "api/mcp.py"),
     ("gateway/statements.py", "api/statements.py"),
     ("gateway/monitors.py", "api/monitors.py"),
+    ("gateway/prices.py", "api/prices.py"),
     ("docs/protocol/MONITORS.md", "spec/MONITORS.md"),
     ("docs/protocol/STATEMENTS.md", "spec/STATEMENTS.md"),
     ("sdk/python/minimalcult/__init__.py", "sdk/python/minimalcult/__init__.py"),

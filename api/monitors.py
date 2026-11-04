@@ -147,7 +147,7 @@ def dispatch(main_db, w, now=None, post=None):
 
 
 # ---------------------------------------------------------------- API (gateway)
-def create_monitor(db, owner, rec, url, paid=None):
+def create_monitor(db, owner, rec, url, paid=None, key_hash=None):
     """Shared by POST /v1/monitors and the MCP tool monitor_create. Returns (row, secret); raises records_api.ApiError."""
     import records_api as RA
     import witness as W
@@ -170,6 +170,15 @@ def create_monitor(db, owner, rec, url, paid=None):
     with db() as c:
         c.executescript(SCHEMA)
         n = c.execute("SELECT count(*) FROM monitors WHERE owner=? AND status!='deleted' AND paid_until IS NULL", (owner,)).fetchone()[0]
+        if n >= FREE_MONITORS and not paid and key_hash:          # PAY: a key pays from its USD credit or GRAM balance at the rate
+            import prices
+            from fastapi import HTTPException
+            try:
+                p = prices.charge_key(c, key_hash, "monitor_30d")
+            except HTTPException:
+                p = None
+            if p:
+                paid = {"amount": p["amount"], "currency": p["currency"], "via": p["via"], "payer": ""}
         if n >= FREE_MONITORS and not paid:
             raise E(402, "payment_error", "free_monitors_used", f"{FREE_MONITORS} monitors are free per key or address; more cost {MONITOR_PRICE_USD} per monitor per 30 days",
                     f"pay in USDC on Base through x402: GET {BASE}/base/monitors?record=<id>&url=<webhook> (other methods arrive with USD pricing)")
@@ -224,7 +233,8 @@ def setup(app, db, get_key, client_ip, h, admin):
         except ValueError:
             raise E(400, "invalid_request_error", "invalid_json", "the body is not JSON", 'send {"record": "<id>", "url": "https://…"}')
         url, rec = str((b or {}).get("url") or "").strip(), str((b or {}).get("record") or "").strip()
-        r, secret = create_monitor(db, owner_of(request), rec, url, WC.internal_payment(request))
+        auth = request.headers.get("authorization")
+        r, secret = create_monitor(db, owner_of(request), rec, url, WC.internal_payment(request), get_key(auth)["key_hash"] if auth else None)
         return view(r, secret)
 
     @app.get("/v1/monitors")
@@ -235,6 +245,18 @@ def setup(app, db, get_key, client_ip, h, admin):
         with db() as c:
             rows = c.execute("SELECT * FROM monitors WHERE owner=? AND status!='deleted' ORDER BY created DESC LIMIT 200", (own,)).fetchall()
         return {"object": "list", "data": [view(r) for r in rows], "has_more": False}
+
+    @app.get("/v1/monitors/_selftest")
+    def selftest_public():
+        """Public, no secrets: our own monitor on every change, delivered to our receiver; delay from the seal to the webhook."""
+        with db() as c:
+            c.executescript(SCHEMA)
+            rows = c.execute("SELECT * FROM monitor_selftest ORDER BY received_at DESC LIMIT 500").fetchall()
+        lat = sorted(r["received_at"] - r["sealed_at"] for r in rows if r["sealed_at"])
+        return {"object": "monitor_selftest", "received": len(rows), "valid_signatures": sum(r["valid"] for r in rows),
+                "last_received_at": W.iso(rows[0]["received_at"]) if rows else None,
+                "seconds_after_seal": {"median": lat[len(lat) // 2] if lat else None, "p95": lat[int(len(lat) * 0.95)] if lat else None, "max": lat[-1] if lat else None},
+                "target_seconds": 300}
 
     @app.get("/v1/monitors/{mid}")
     def get(request: Request, mid: str):
