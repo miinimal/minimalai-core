@@ -91,8 +91,47 @@ def check_fact(f, as_of, key_hex, pq_key_hex=None):
     return r
 
 
+def check_attestation(doc, key_hex, pq_key_hex=None):
+    """An attestation proof (GET /v1/attestations/{id}/proof): the envelope is the recorded fact, sealed like any other;
+    a checkpoint or tree head is checked again with the log's own key carried in the envelope."""
+    from . import formats as F
+    env, fact = doc.get("envelope") or {}, doc.get("fact")
+    rep = {"kind": "attestation", "id": doc.get("attestation_id"), "record_type": env.get("record_type"), "writer": env.get("writer"),
+           "payload_type": env.get("payload_type"), "signature": {"ed25519": None, "ml_dsa_65": None}}
+    ver = env.get("verified") or {}
+    pay = {"checked": False}
+    try:
+        if env.get("payload_type") in ("checkpoint", "rfc9162_checkpoint") and env.get("payload") and ver.get("log_key"):
+            r = F.verify_note(env["payload"], ver["log_key"])
+            pay = {"checked": True, "ok": r["tree_size"] == ver.get("tree_size") and r["root_hash"] == ver.get("root_hash"), "log_key_id": r["key_id"]}
+        elif env.get("payload_type") == "rfc6962_sth" and env.get("payload") and ver.get("log_key"):
+            r = F.verify_sth(env["payload"], ver["log_key"])
+            pay = {"checked": True, "ok": r["root_hash"] == ver.get("root_hash") and r["tree_size"] == ver.get("tree_size"), "log_key_id": r["key_id"]}
+        if env.get("payload") is not None and env.get("payload_type") != "sha256":
+            raw = env["payload"].encode("utf-8") if isinstance(env["payload"], str) else canon(env["payload"])
+            pay["payload_sha256"] = hashlib.sha256(raw).hexdigest() == env.get("payload_sha256")
+    except Exception as e:  # noqa: BLE001
+        pay = {"checked": True, "ok": False, "error": str(e)[:160]}
+    rep["payload"] = pay
+    if not fact:
+        rep["fact"] = {"sealed": False, "ok": False}
+        rep["ok"] = False
+        rep["note"] = "not recorded yet: attestations are recorded and sealed at the next hourly run"
+        return rep
+    f = check_fact({**fact, "digest": {"value": sha(env)}, "id": env.get("id"), "type": env.get("payload_type"),
+                    "version": fact["observation"].get("version")}, None, key_hex, pq_key_hex)
+    f["envelope_digest"] = fact["observation"].get("digest") == sha(env)
+    rep["fact"] = f
+    rep["ok"] = bool(f["ok"] and f.get("sealed") and f["envelope_digest"] and pay.get("ok", True) and pay.get("payload_sha256", True))
+    if not f.get("sealed"):
+        rep["note"] = "recorded, not sealed yet: sealed within the hour"
+    return rep
+
+
 def verify(doc, key_hex, pq_key_hex=None):
     """Full report; report['ok'] is the verdict."""
+    if doc.get("kind") == "attestation":
+        return check_attestation(doc, key_hex, pq_key_hex)
     rep = {"kind": doc.get("kind"), "id": doc.get("statement_id") or doc.get("check_id") or doc.get("verdict_id"),
            "signature": check_signature(doc, key_hex, pq_key_hex)}
     ok = rep["signature"]["ed25519"] and rep["signature"]["ml_dsa_65"] is not False
@@ -108,7 +147,7 @@ def verify(doc, key_hex, pq_key_hex=None):
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="minimalcult", description="Verify MINIMALCULT signed documents offline")
     sub = ap.add_subparsers(dest="cmd", required=True)
-    v = sub.add_parser("verify", help="verify a statement, check or record (JSON file)")
+    v = sub.add_parser("verify", help="verify a statement, check, attestation proof or record (JSON file)")
     v.add_argument("file")
     v.add_argument("--key", required=True, help="Ed25519 public key, hex (receipt_key_ed25519)")
     v.add_argument("--pq-key", help="ML-DSA-65 public key, hex (receipt_key_mldsa65)")
@@ -119,6 +158,22 @@ def main(argv=None):
     if a.json:
         print(json.dumps(rep, indent=2))
     else:
+        if rep["kind"] == "attestation":
+            f, p = rep["fact"], rep["payload"]
+            print(f"attestation {rep['id']} ({rep['record_type']} by {rep['writer']}, {rep['payload_type']})")
+            print(f"  payload: " + ("log signature " + ("ok" if p.get("ok") else "FAILED") if p.get("checked") else "digest only")
+                  + ("" if p.get("payload_sha256", True) else ", payload sha256 FAILED"))
+            if f.get("sealed"):
+                bs = f["batch_signature"]
+                print(f"  record: leaf {'ok' if f['leaf'] else 'FAILED'}, envelope {'ok' if f['envelope_digest'] else 'FAILED'}, merkle "
+                      f"{'ok' if f['merkle'] else 'FAILED'}, head {'ok' if f['head'] else 'FAILED'}, batch signature Ed25519 "
+                      f"{'ok' if bs['ed25519'] else 'FAILED'}, ML-DSA-65 {'ok' if bs['ml_dsa_65'] else ('not checked' if bs['ml_dsa_65'] is None else 'FAILED')}")
+                for k, an in (f.get("anchors") or {}).items():
+                    print(f"    anchor {k}: {an['status']}  {an['proof_url']}")
+            if rep.get("note"):
+                print("  " + rep["note"])
+            print("VERIFIED" if rep["ok"] else "NOT VERIFIED")
+            return 0 if rep["ok"] else 1
         s = rep["signature"]
         print(f"{rep['kind']} {rep['id']}: signature Ed25519 {'ok' if s['ed25519'] else 'FAILED'}, ML-DSA-65 "
               f"{'ok' if s['ml_dsa_65'] else ('not checked' if s['ml_dsa_65'] is None else 'FAILED')}")

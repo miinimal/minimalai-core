@@ -608,6 +608,117 @@ def publish_head(batch, main_db=None):
         m.close()
 
 
+# ---------------------------------------------------------------- ATT: attestations of other logs and services
+def _main(main_db=None):
+    m = sqlite3.connect(main_db or MAIN_DB, timeout=30)
+    m.row_factory = sqlite3.Row
+    import attest
+    attest.migrate(m)
+    return m
+
+
+def _record_att(c, obj, kind, version, env, ts, source, att_id):
+    seq = observe(c, obj, kind, version, env, ts, source, meta={"record_type": env["record_type"], "attestation": att_id},
+                  info={"title": env.get("subject")}, news=False)
+    if seq is None:   # the same envelope was recorded before (a retry): point at that observation
+        r = c.execute("SELECT seq FROM w_obs WHERE object=? AND kind=? AND version=? AND digest=?", (obj, kind, version, sha(env))).fetchone()
+        seq = r["seq"] if r else None
+    return seq
+
+
+def drain_attestations(c, now, main_db=None, limit=5000):
+    """Writers' attestations accepted by the gateway (status received) become observations of this record, so the next seal
+    and its anchors cover them. Quarantined ones older than 7 days are dropped (rejected)."""
+    m = _main(main_db)
+    n = 0
+    try:
+        m.execute("UPDATE attestations SET status='rejected' WHERE status='quarantined' AND created<?", (now - 7 * 86400,))
+        rows = m.execute("SELECT * FROM attestations WHERE status='received' ORDER BY created LIMIT ?", (limit,)).fetchall()
+        for r in rows:
+            env = json.loads(r["envelope"])
+            seq = _record_att(c, r["w_object"], r["payload_type"], r["w_version"], env, r["created"], r["writer"], r["id"])
+            c.commit()
+            m.execute("UPDATE attestations SET status='recorded', w_seq=? WHERE id=? AND status='received'", (seq, r["id"]))
+            m.commit()
+            n += 1
+    finally:
+        m.close()
+    return {"recorded": n}
+
+
+def read_logs(c, now, get=None, main_db=None, logs=None):
+    """Read mode: the signed head of every configured public log, verified with its pinned key and recorded as an observation;
+    consistency with the previous head is checked where the log serves proofs."""
+    import att_logs
+    import attest
+    import attest_formats as AF
+    get = get or (lambda u: fetch(u, guard=True, timeout=20))
+    out = {}
+    m = _main(main_db)
+    try:
+        for lg in (logs if logs is not None else att_logs.LOGS):
+            try:
+                st, _h, body = get(lg["head_url"])
+                if st != 200:
+                    raise RuntimeError(f"head {st}")
+                tree_id = None
+                if lg["format"] == "rekor_v1":
+                    d = json.loads(body)
+                    note, tree_id = d["signedTreeHead"], str(d.get("treeID") or "")
+                else:
+                    note = body.decode("utf-8")
+                head = AF.verify_note(note, lg["key"])
+                cons = {"status": "not_available"}
+                prev = state(c, "att_head:" + lg["id"])
+                prev = json.loads(prev) if prev else None
+                if prev and prev["origin"] == head["origin"] and prev["tree_size"] < head["tree_size"] and lg.get("proof_url") and tree_id:
+                    st2, _h2, pb = get(lg["proof_url"].format(first=prev["tree_size"], second=head["tree_size"], tree_id=tree_id))
+                    proof = json.loads(pb) if st2 == 200 else None
+                    if proof is not None and AF.verify_consistency(prev["tree_size"], head["tree_size"], prev["root_hash"], head["root_hash"], proof.get("hashes") or []):
+                        cons = {"status": "verified", "from_tree_size": prev["tree_size"], "from_root_hash": prev["root_hash"], "proof": proof.get("hashes") or []}
+                    elif proof is not None:
+                        # a private notice first, with a right of reply; nothing about it enters the public record now
+                        cons = {"status": "diverged", "proof": proof}
+                    else:
+                        cons = {"status": "proof_unavailable"}
+                elif prev and prev["origin"] != head["origin"]:
+                    cons = {"status": "new_origin", "previous_origin": prev["origin"]}
+                elif prev and prev["tree_size"] == head["tree_size"]:
+                    cons = {"status": "same_head"} if prev["root_hash"] == head["root_hash"] else {"status": "diverged", "proof": None}
+                elif prev and prev["tree_size"] > head["tree_size"]:
+                    cons = {"status": "diverged", "proof": None}   # a log never shrinks
+                if cons["status"] == "diverged":
+                    # a private notice first, with a 72-hour right of reply; this head stays out of the public record for now
+                    m.execute("INSERT INTO att_divergences(ts, log, from_size, to_size, detail, publish_after) VALUES(?,?,?,?,?,?)",
+                              (now, lg["id"], prev["tree_size"], head["tree_size"],
+                               json.dumps({"from": prev, "to": head, "note": note, "proof": cons["proof"]}, default=str)[:20000], now + 72 * 3600))
+                    m.commit()
+                    out[lg["id"]] = {"tree_size": head["tree_size"], "consistency": "held: private notice"}
+                    continue
+                aid = f"att_obs_{hashlib.sha256((lg['id'] + head['origin'] + str(head['tree_size'])).encode()).hexdigest()[:16]}"
+                env = {"v": 1, "type": "attestation", "id": aid, "record_type": "observation", "writer": "minimalcult", "writer_identity": "minimalcult.org",
+                       "subject": head["origin"], "payload_type": "checkpoint", "payload_sha256": AF.sha256_hex(note.encode("utf-8")), "payload": note,
+                       "verified": {"check": "signed_note", "origin": head["origin"], "tree_size": head["tree_size"], "root_hash": head["root_hash"],
+                                    "log_key": lg["key"], "log_key_id": head["key_id"], "log_key_source": "pinned (att_logs.py)"},
+                       "consistency": cons, "log": lg["id"], "fields": None, "received_at": iso(now)}
+                obj = attest.subject_key(lg["id"])
+                seq = _record_att(c, obj, "checkpoint", str(head["tree_size"]), env, now, "minimalcult.org", aid)
+                c.commit()
+                m.execute("INSERT OR IGNORE INTO attestations(id, created, writer, client_operation_id, subject, payload_type, payload_sha256, status, envelope, "
+                          "w_object, w_version, w_seq) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                          (aid, now, "minimalcult", None, head["origin"], "checkpoint", env["payload_sha256"], "recorded", json.dumps(env, sort_keys=True), obj,
+                           str(head["tree_size"]), seq))
+                m.commit()
+                set_state(c, "att_head:" + lg["id"], json.dumps({"origin": head["origin"], "tree_size": head["tree_size"], "root_hash": head["root_hash"]}))
+                c.commit()
+                out[lg["id"]] = {"tree_size": head["tree_size"], "consistency": cons["status"]}
+            except Exception as e:  # noqa: BLE001  one log failing never stops the others or the record
+                out[lg["id"]] = {"error": f"{type(e).__name__}: {str(e)[:160]}"}
+    finally:
+        m.close()
+    return out
+
+
 # ---------------------------------------------------------------- CAP-1: capacity, measured every hour (read only)
 DATA_DIR = os.environ.get("WITNESS_DATA_DIR", os.path.dirname(os.path.abspath(WITNESS_DB)) or ".")
 
@@ -712,14 +823,16 @@ def capacity_forecast(c, scale=(1, 5)):
     return out
 
 
-def run_once(c, now=None, budget=None, get=None, post=None, adapters=None, upgrade=None, sign=None, main_db=None):
+def run_once(c, now=None, budget=None, get=None, post=None, adapters=None, upgrade=None, sign=None, main_db=None, logs_get=None):
     """One hourly run: read the sources within the time budget, record the run itself, seal, anchor, publish the head."""
     now = now or int(time.time())
     deadline = time.time() + (RUN_BUDGET_S if budget is None else budget)
     summary = {"started_at": iso(now)}
     for name, fn in (("registry", lambda: crawl_registry(c, now, deadline, get)),
                      ("packages", lambda: crawl_packages(c, now, deadline, get)),
-                     ("remotes", lambda: probe_remotes(c, now, deadline, post))):
+                     ("remotes", lambda: probe_remotes(c, now, deadline, post)),
+                     ("logs", lambda: read_logs(c, now, get=logs_get, main_db=main_db) if (logs_get or get is None) else {"skipped": "sources injected"}),
+                     ("attestations", lambda: drain_attestations(c, int(time.time()), main_db))):
         try:
             summary[name] = fn()
         except Exception as e:  # noqa: BLE001  one failing source never stops the record of the others
