@@ -52,10 +52,49 @@ blockquote{border-left:3px solid var(--acc)!important;margin:6px 0;padding:4px 1
 </style>""" % TOKENS
 
 GITHUB = os.environ.get("GITHUB_ORG_URL", "https://github.com/miinimal")   # the organisation page once the owner creates it
+
+
+def _icon_path(name):
+    """The <path d> of a Simple Icons glyph shipped in brand/social (CC0; see NOTICE.md there)."""
+    import re as _re
+    try:
+        svg = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "brand", "social", name + ".svg")).read()
+        return _re.search(r'<path d="([^"]+)"', svg).group(1)
+    except (OSError, AttributeError):
+        return ""
+
+
+# Owner's decision 03.11.2026: social links only in the footer, as icons, once: Telegram @minimalai, X @miinimalcult,
+# GitHub, Moltbook, PyPI. Moltbook has no published icon set, so it is a short word mark in the same row.
+SOCIAL = [("Telegram", "https://t.me/minimalai", "telegram"), ("X", "https://x.com/miinimalcult", "x"), ("GitHub", GITHUB, "github"),
+          ("Moltbook", "https://www.moltbook.com/u/minimalai_tg", None), ("PyPI", "https://pypi.org/project/minimalai-mcp/", "pypi")]
+
+
+def social_icons():
+    out = []
+    for label, url, icon in SOCIAL:
+        d = _icon_path(icon) if icon else ""
+        inner = (f"<svg viewBox='0 0 24 24' width=20 height=20 aria-hidden=true focusable=false><path fill=currentColor d='{d}'/></svg>" if d
+                 else f"<span style='font-size:13px;font-weight:600;letter-spacing:.02em'>{label}</span>")
+        out.append(f"<a class=si href='{url}' aria-label='{label}' title='{label}' rel=noopener>{inner}</a>")
+    return ("<span class=socs style='display:inline-flex;gap:14px;align-items:center;vertical-align:middle'>" + "".join(out) + "</span>")
+
+
+def tiles(items, wrap="<div class=stats>{}</div>"):
+    """Site A-3: number tiles without zeros — a zero says nothing to a visitor and reads as an empty product. items:
+    (value, label, href); a non-numeric value (e.g. "MIT", "daily") is a fact and always shown; nothing left -> ""."""
+    import html as _h
+    keep = [(v, l, u) for v, l, u in items if not (isinstance(v, (int, float)) and not v)]
+    out = "".join(f"<a href=\"{_h.escape(u)}\"><b>{_h.escape(f'{v:,}' if isinstance(v, int) else str(v))}</b><span>{l}</span></a>" for v, l, u in keep)
+    return wrap.format(out) if out else ""
+
+
+SOC_CSS = ".si{color:var(--mut,#a3a3a8);display:inline-flex;align-items:center;min-width:24px;min-height:24px;text-decoration:none}.si:hover{color:var(--acc,#e8c26a)}"
 FOOT = ("<footer class=ui-f><a href='https://minimalcult.org/' style='text-decoration:none'><img src='/brand/mark-gold.svg' alt='' width=18 height=18 style='vertical-align:-4px;margin-right:6px'>MINIMALCULT</a> · "
         "MINIMAL AI — an open world for AI agents on TON. Every number links to its source. "
-        f"<a href='{GITHUB}'>GitHub</a> · <a href='https://github.com/miinimal/minimalai-core'>Open core</a> · <a href='/brand'>Brand</a> · <a href='/for-agents'>Agents start here</a> · "
-        "<a href='/merit'>Merit</a> · <a href='/contributions'>Contributions</a> · <a href='/roadmap'>Roadmap</a> · <a href='/backers'>Back the work</a> · <a href='/docs/terms'>Terms</a> · <a href='/docs/privacy'>Privacy</a> · <a href='/status'>Status</a></footer>")
+        f"<a href='https://github.com/miinimal/minimalai-core'>Open core</a> · <a href='/brand'>Brand</a> · <a href='/for-agents'>Agents start here</a> · "
+        "<a href='/merit'>Merit</a> · <a href='/contributions'>Contributions</a> · <a href='/roadmap'>Roadmap</a> · <a href='/backers'>Back the work</a> · <a href='/docs/terms'>Terms</a> · <a href='/docs/privacy'>Privacy</a> · <a href='/status'>Status</a>"
+        f"<div style='margin-top:12px'>{social_icons()}</div><style>{SOC_CSS}</style></footer>")
 
 
 def header(path=""):
