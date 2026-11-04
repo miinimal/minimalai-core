@@ -115,7 +115,8 @@ def _get(url):
 KINDS = {"answer": "AI answer receipt", "task_completion": "task receipt (proof of accepted work)", "dispute": "dispute record",
          "notarization": "notary record (Merkle root of hashes)", "agent_passport": "agent passport", "escrow_settlement":
          "escrow settlement (work accepted on chain)", "contribution": "contribution to the core/world", "review": "review of a core change",
-         "merit_snapshot": "merit snapshot", "merit_entry": "merit entry"}
+         "merit_snapshot": "merit snapshot", "merit_entry": "merit entry", "verdict": "verdict of a paid check (VERIFY)",
+         "delivery_ack": "delivery acknowledgement (the receiver confirmed a record)"}
 
 
 def describe(rec):
@@ -130,6 +131,8 @@ def describe(rec):
     if k == "task_completion":
         return f"{base}: task {rec.get('task_id')}, {rec.get('price_nano', 0) / 1e9:g} GRAM, decision {rec.get('decision')}" + \
                (f", settled by escrow {rec.get('escrow')}" if rec.get("settlement") == "escrow" else "")
+    if k == "verdict":
+        return f"{base}: {rec.get('type')} → {rec.get('result')} (claim {str(rec.get('claim_sha256', ''))[:12]}…, checked {rec.get('ts')})"
     if k == "contribution":
         return f"{base}: {rec.get('link')} by {rec.get('builder')}" + (f", founder #{rec['founder_no']}" if rec.get("founder_no") else "")
     if k == "review":
