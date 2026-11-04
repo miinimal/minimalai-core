@@ -41,6 +41,13 @@ TOOLS = [
          "integrity": {"type": "string", "description": "npm dist.integrity of the tarball you are about to install"},
          "as_of": {"type": "string", "description": "RFC 3339 time: answer as the record stood at that moment"}}},
      "annotations": {"readOnlyHint": True, "openWorldHint": True}},
+    {"name": "monitor_create", "title": "Watch a record",
+     "description": "Subscribe a webhook to changes of a record (new version, tool description changed, removed). Returns the monitor id and "
+                    "a secret shown once (HMAC-SHA256 signatures, header MINIMALCULT-Signature). 3 monitors per address are free.",
+     "inputSchema": {"type": "object", "required": ["record", "url"], "properties": {
+         "record": {"type": "string", "description": "rec_ id or mcp:<registry name>, npm:<name>, pypi:<name>"},
+         "url": {"type": "string", "description": "public https URL that receives monitor.triggered events"}}},
+     "annotations": {"readOnlyHint": False, "destructiveHint": False, "openWorldHint": True}},
     {"name": "record_search", "title": "Search the record",
      "description": "Find records of MCP servers and npm/PyPI packages by name or words; returns rec_ ids, on-record-since dates, latest versions.",
      "inputSchema": {"type": "object", "required": ["query"], "properties": {"query": {"type": "string"},
@@ -105,8 +112,12 @@ def record_versions(a):
 PER_MIN = int(os.environ.get("MCP_PER_MIN", "120"))
 
 
-def setup(app, client_ip):
+_DB, _H = [None], [None]
+
+
+def setup(app, client_ip, db=None, h=None):
     import witness_check as WC
+    _DB[0], _H[0] = db, h
 
     @app.get("/.well-known/mcp-registry-auth", response_class=PlainTextResponse, include_in_schema=False)
     def registry_auth():
@@ -167,6 +178,14 @@ def setup(app, client_ip):
                                     "https://ai.minimalcult.org/base/checks")
                 result = {k: v for k, v in RA_check_object(ctx).items() if k != "signed_record"}
                 result["signed_record_url"] = result["url"]
+            elif name == "monitor_create":
+                import monitors
+                try:
+                    row, secret = monitors.create_monitor(_DB[0], "ip:" + _H[0]("ip:" + client_ip(request)), str(args.get("record") or ""), str(args.get("url") or ""))
+                except RA.ApiError as e:
+                    raise ToolError(f"{e.body['message']}. next_step: {e.body['next_step']}")
+                result = {"id": row["id"], "object": "monitor", "record": row["record"], "url": row["url"], "status": row["status"], "secret": secret,
+                          "secret_note": "shown once; manage the monitor with X-Monitor-Secret at /v1/monitors/{id}"}
             elif name == "record_search":
                 result = record_search(args)
             elif name == "record_get":

@@ -154,10 +154,12 @@ def _migrate(c):
 def _what(kind, version, prev_version, payload):
     if kind == "status":
         return f"registry status: {(payload or {}).get('status')}"
+    if kind == "tools":                       # the main swap vector: never hidden behind a version bump
+        return "tool descriptions changed" + (f" (with version {version})" if prev_version is not None and prev_version != version else "")
     if prev_version is not None and prev_version != version:
         return f"new version {version}"
     if kind == "tools":
-        return "tool list changed"
+        return "tool descriptions changed"
     return f"{kind} of {version} changed"
 
 
@@ -789,7 +791,19 @@ def main():
             log.info("witness run: %s", json.dumps(s, default=str)[:1500])
         except Exception as e:  # noqa: BLE001
             log.exception("witness run failed: %s", e)
+        last_dispatch = 0
         while not STOP["now"] and time.time() - start < 3600:
+            if time.time() - last_dispatch >= 60:          # MON: events right after the cycle, then retries every minute
+                last_dispatch = time.time()
+                try:
+                    import monitors
+                    c = connect()
+                    d = monitors.dispatch(MAIN_DB, c)
+                    c.close()
+                    if d["events"] or d["delivered"] or d["failed"]:
+                        log.info("monitors: %s", d)
+                except Exception as e:  # noqa: BLE001
+                    log.warning("monitors: %s", e)
             time.sleep(2)
     log.info("witness: stopped after sealing")
 
@@ -1075,7 +1089,7 @@ def recent_changes(c, limit=20):
         if r["kind"] != "status" and p and p["version"] != r["version"]:
             what = f"new version {r['version']}"
         elif r["kind"] == "tools":
-            what = "tool list changed"
+            what = "tool descriptions changed"
         elif r["kind"] == "status":
             what = f"registry status: {(body_of(r) or {}).get('status')}"
         else:
