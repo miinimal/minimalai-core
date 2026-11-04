@@ -20,8 +20,22 @@ SCHEMA = "CREATE TABLE IF NOT EXISTS signup_sources(ts INTEGER, key_hash TEXT PR
 SRC_RE = re.compile(r"^[a-z0-9][a-z0-9_.-]{0,31}$")
 
 
-def record_source(c, key_hash, src, now=None):
+def ua_tag(user_agent):
+    """A coarse door tag when the sign-up names none (site block C-4): the client family from the User-Agent, nothing else."""
+    ua = (user_agent or "").strip().lower()
+    if not ua:
+        return "ua-none"
+    if ua.startswith("mozilla/") and ("chrome" in ua or "safari" in ua or "firefox" in ua):
+        return "ua-browser"
+    fam = re.split(r"[/ (]", ua, 1)[0]
+    fam = re.sub(r"[^a-z0-9_.-]", "", fam)[:20] or "other"
+    return "ua-" + fam
+
+
+def record_source(c, key_hash, src, now=None, user_agent=None):
     src = str(src or "").strip().lower()
+    if not src and user_agent is not None:
+        src = ua_tag(user_agent)
     if not SRC_RE.match(src):
         return None
     c.executescript(SCHEMA)
