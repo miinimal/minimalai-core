@@ -78,12 +78,10 @@ SOURCES = [
     ("gh:cloudflare/web-bot-auth", "github_release", "cloudflare/web-bot-auth", "Cloudflare Web Bot Auth"),
     ("html:anthropic-api-notes", "html_match", "https://docs.claude.com/en/release-notes/api|id=\"([a-z]+-\\d{1,2}-20\\d\\d)\"", "Anthropic API release notes"),
     ("html:gemini-changelog", "html_match", "https://ai.google.dev/gemini-api/docs/changelog|([A-Z][a-z]+ \\d{1,2}, 20\\d\\d)", "Gemini API changelog"),
-    ("html:xai-changelog", "html_match", "https://docs.x.ai/docs/changelog|([A-Z][a-z]+ \\d{1,2}, 20\\d\\d)", "xAI API changelog"),
-    ("rss:meta-ai", "rss", "https://ai.meta.com/blog/rss/", "Meta AI blog"),
     ("json:openrouter-models", "json_count", "https://openrouter.ai/api/v1/models|data", "OpenRouter model count"),
-    ("json:pulsemcp", "json_count", "https://api.pulsemcp.com/v0beta/servers?count_per_page=1|total_count", "PulseMCP server count"),
 ]
-# not sensed yet (no public feed found on 2026-11-04): Fabrika AI, "@agent" beta leaks, Glama and Smithery counts (API needs a key).
+# not sensed (checked on production 2026-11-04 00:39 UTC): xAI changelog (404), Meta AI RSS (404), PulseMCP v0beta (410 Gone); no public feed found:
+# Fabrika AI, "@agent" beta leaks; Glama and Smithery counts need an API key.
 GOALS = ("MINIMAL AI (minimalcult.org) is an open world for AI agents: identity on the agent's own key (passport, ERC-8004 link), "
          "numbered addresses N.minimalcult.ton, paid work between agents with signed receipts, non-custodial escrow on TON, GRAM-402 "
          "(HTTP 402 paid in TON), MCP server minimalai-mcp, A2A card, Moltbook presence. Goals: GRAM flowing between strangers, treasury "
@@ -97,7 +95,7 @@ def _get(url, timeout=20):
         hdr["Authorization"] = "Bearer " + os.environ["NERVES_GITHUB_TOKEN"]
     req = urllib.request.Request(url, headers=hdr)
     with urllib.request.urlopen(req, timeout=timeout) as r:
-        return r.read(300_000)
+        return r.read(2_500_000)
 
 
 def observe(kind, target, fetch=None):
@@ -134,7 +132,17 @@ def observe(kind, target, fetch=None):
         val = str(n) if n is not None else name
         return val, f"MCP registry: {n if n is not None else 'newest'} servers (newest {name})", "https://registry.modelcontextprotocol.io", ""
     if kind == "rss":
-        root = ET.fromstring(get(target))
+        raw = get(target)
+        try:
+            root = ET.fromstring(raw)
+        except ET.ParseError:
+            # a feed with a stray entity (blog.ton.org): the first item by pattern is enough for "did it change"
+            import re as _re
+            txt = raw.decode("utf-8", "replace")
+            m = _re.search(r"<item>.*?<title>(?:<!\[CDATA\[)?(.*?)(?:\]\]>)?</title>.*?<link>(.*?)</link>", txt, _re.S)
+            if not m:
+                raise
+            return m.group(2).strip() or m.group(1).strip(), m.group(1).strip()[:120], m.group(2).strip(), ""
         item = root.find(".//item") or root.find(".//{http://www.w3.org/2005/Atom}entry")
         if item is None:
             return "", "", target, ""
@@ -192,6 +200,8 @@ def tick(c, now=None, fetch=None, sources=None, model=None):
     now = now or int(time.time())
     c.executescript(SCHEMA)
     out = {"polled": 0, "events": 0, "rated": 0, "errors": 0}
+    known = [sid for sid, _, _, _ in (sources or SOURCES)]
+    c.execute(f"DELETE FROM nerves_state WHERE source NOT IN ({','.join('?' * len(known))})", known)   # a source that left the list leaves the table
     for sid, kind, target, label in (sources or SOURCES):
         st = c.execute("SELECT * FROM nerves_state WHERE source=?", (sid,)).fetchone()
         every = DAILY_S if (st and st["demoted"]) else HOURLY_S
