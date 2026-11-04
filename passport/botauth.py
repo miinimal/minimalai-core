@@ -224,8 +224,44 @@ def setup(app, db, admin):
         host = (request.headers.get("host") or "").split(":")[0].lower()
         with db() as c:
             r = verify(dict(request.headers), host, c, method=request.method, target_uri=str(request.url), path=request.url.path)
-        return {**r, "authority": host, "standard": "RFC 9421 HTTP Message Signatures, Web Bot Auth profile (tag web-bot-auth)",
+        passport = None
+        if r["verified"]:
+            with db() as c:
+                if "signer" in [x[1] for x in c.execute("PRAGMA table_info(passports)")]:
+                    p = c.execute("SELECT id, name FROM passports WHERE signer=?", (r["agent"],)).fetchone()
+                    passport = {"id": p["id"], "name": p["name"], "url": f"https://ai.minimalcult.org/v1/passport/{p['id']}"} if p else None
+        return {**r, "passport": passport, "authority": host, "standard": "RFC 9421 HTTP Message Signatures, Web Bot Auth profile (tag web-bot-auth)",
                 "how": "sign @authority and signature-agent with your Ed25519 key, publish it at https://<your host>/.well-known/http-message-signatures-directory; keyid = JWK thumbprint"}
+
+    @app.post("/v1/passport/{id_}/signer")
+    async def link_signer(id_: str, request: Request):
+        """G-2: bind a Web Bot Auth signer to a passport, both ways at once. The request itself must carry a verified Web Bot Auth
+        signature (proves control of the signer's key), and the body carries `sig` = the passport key's Ed25519 signature over
+        `minimalai-signer:<passport id>:<signer host>` (proves control of the passport). After that the passport shows the signer,
+        and a signed request from that host is this passport's request."""
+        import base64 as _b64
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey as _Pub
+        from fastapi import HTTPException
+        b = await request.json()
+        id_ = id_.lower()[:32]
+        host = (request.headers.get("host") or "").split(":")[0].lower()
+        with db() as c:
+            v = verify(dict(request.headers), host, c, method=request.method, target_uri=str(request.url), path=request.url.path)
+            if not v["verified"]:
+                raise HTTPException(401, "this request must itself be signed per Web Bot Auth: " + str(v["reason"]))
+            row = c.execute("SELECT * FROM passports WHERE id=?", (id_,)).fetchone()
+            if not row:
+                raise HTTPException(404, "no such passport")
+            try:
+                _Pub.from_public_bytes(bytes.fromhex(row["pubkey"])).verify(_b64.b64decode(str(b.get("sig") or "")), f"minimalai-signer:{id_}:{v['agent']}".encode())
+            except Exception:  # noqa: BLE001
+                raise HTTPException(401, f"sign 'minimalai-signer:{id_}:{v['agent']}' with the passport key")
+            cols = [r[1] for r in c.execute("PRAGMA table_info(passports)")]
+            if "signer" not in cols:
+                c.execute("ALTER TABLE passports ADD COLUMN signer TEXT"); c.execute("ALTER TABLE passports ADD COLUMN signer_ts INTEGER")
+            c.execute("UPDATE passports SET signer=?, signer_ts=? WHERE id=?", (v["agent"], int(time.time()), id_))
+        return {"passport": id_, "signer": v["agent"], "keyid": v["keyid"], "bound": True,
+                "meaning": "requests signed by this host are this passport's requests; the passport record now carries the signer"}
 
     @app.get("/admin/botauth")
     def seen(authorization: str = Header(None), days: int = 28):

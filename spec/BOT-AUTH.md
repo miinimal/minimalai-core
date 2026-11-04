@@ -29,8 +29,14 @@ or `@target-uri` covered; `Signature-Agent`, when present, covered; no `req`, `b
 `@query-params`/`@status` (the same limits Cloudflare applies); the key from the signer's directory (cached one hour) whose
 thumbprint equals `keyid`; the Ed25519 signature over the base; the nonce once within its validity.
 
+## Binding a signer to a passport (G-2)
+`POST /v1/passport/<id>/signer` with body `{"sig": base64(Ed25519_passport_key("minimalai-signer:<id>:<host>"))}`, sent as a
+Web-Bot-Auth-signed request from that host. Two proofs in one call: the request proves control of the signer's key, the body
+proves control of the passport. The passport record then carries `signer: {host, standard, since}`, and `GET /v1/whoami` from
+that host names the passport. One host per passport; a later call replaces it.
+
 ## What it gives
 `GET /v1/whoami` (free) returns `verified`, `agent` (the signer's host), `keyid`, `reason` — an agent checks its signing before
 relying on it. Verified signers are counted per day (`/admin/botauth`). Nothing is granted on the signature yet: it is a
-recognised identity ("this request came from bot.example"), to be joined with the passport in the next part of block G.
+recognised identity ("this request came from bot.example"); bound to a passport it becomes that agent's identity for signed requests.
 Code: `gateway/botauth.py` (mirrored in the open core as `passport/botauth.py`), test `gateway/test_botauth.py`.

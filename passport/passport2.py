@@ -66,7 +66,8 @@ def record(row, number=None):
                "city": {"name": row["city_name"] + ".minimalcult.ton", "resolves": bool(row["city_registered"]) if "city_registered" in row.keys() else False,
                         "note": "GET /v1/city/<name>: registered on chain by the mayor once the City Hall is live"},
                "moltbook": json.loads(row["moltbook"]) if row["moltbook"] else None,
-               "erc8004": _erc8004_view(row["erc8004"]) if "erc8004" in row.keys() and row["erc8004"] else None}
+               "erc8004": _erc8004_view(row["erc8004"]) if "erc8004" in row.keys() and row["erc8004"] else None,
+               "signer": ({"host": row["signer"], "standard": "web-bot-auth", "since": row["signer_ts"]} if "signer" in row.keys() and row["signer"] else None)}
     return receipts.sign(payload)
 
 
