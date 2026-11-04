@@ -62,7 +62,7 @@ SOURCES = [
     ("rss:openai", "rss", "https://openai.com/news/rss.xml", "OpenAI news"),
     ("gh:anthropics/anthropic-sdk-python", "github_release", "anthropics/anthropic-sdk-python", "Anthropic API SDK"),
     ("rss:google-ai", "rss", "https://blog.google/technology/ai/rss/", "Google AI blog"),
-    ("rss:ton", "rss", "https://blog.ton.org/rss.xml", "TON blog"),
+    ("tg:toncoin", "tg_channel", "toncoin", "TON official channel t.me/toncoin (blog.ton.org/rss.xml stopped returning a feed, 2026-11-04)"),
     ("moltbook:new", "moltbook", "https://www.moltbook.com/api/v1/posts?sort=new&limit=5", "Moltbook newest posts (read only)"),
     # block F: the full list of the staff direction
     ("tg:api-changelog", "html_match", "https://core.telegram.org/bots/api-changelog|Bot API (\\d+\\.\\d+)", "Telegram Bot API changelog"),
