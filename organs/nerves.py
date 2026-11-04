@@ -425,21 +425,19 @@ def ask_model(event):
               'for the development session, or null if nothing to do"}. 9-10: a standard we implement changed in a way that breaks or '
               "unlocks us; 7-8: an opportunity or risk worth a block this week; 4-6: watch; 0-3: noise.")
     content = f"<event>\ntitle: {event['title']}\nurl: {event['url']}\ndetail: {event['detail']}\n</event>"
+    import claudeapi
     d, used = None, None
     for model in [MODEL] + MODEL_FALLBACKS:          # the first model name the API knows; names change, the organ must not stop
-        body = json.dumps({"model": model, "max_tokens": 300, "thinking": {"type": "disabled"}, "system": system,
-                           "messages": [{"role": "user", "content": content}]}).encode()
-        req = urllib.request.Request("https://api.anthropic.com/v1/messages", data=body, method="POST",
-                                     headers={"x-api-key": key, "anthropic-version": "2023-06-01", "content-type": "application/json"})
         try:
-            with urllib.request.urlopen(req, timeout=60) as r:
-                d = json.load(r); used = model
+            d = claudeapi.messages(key, {"model": model, "max_tokens": 300, "system": system,
+                                         "messages": [{"role": "user", "content": content}]}, timeout=60)
+            used = model
             break
-        except urllib.error.HTTPError as e:
+        except claudeapi.APIError as e:
             if e.code == 404 and model != ([MODEL] + MODEL_FALLBACKS)[-1]:
                 continue
             raise
-    text = "".join(b.get("text", "") for b in d.get("content", []) if b.get("type") == "text")
+    text = claudeapi.text(d)
     s, e = text.find("{"), text.rfind("}")
     j = json.loads(text[s:e + 1]) if s >= 0 and e > s else {}
     imp = j.get("importance")
