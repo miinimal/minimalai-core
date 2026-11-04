@@ -94,11 +94,10 @@ def wrap(doc, path):
         doc = re.sub(r"</head>", lambda _: CSS + "</head>", doc, count=1, flags=re.I)
     else:
         doc = CSS + doc
-    m = _BODY.search(doc)
-    hdr = header(path)
     if "rel=icon" not in doc and "rel=\"icon\"" not in doc and re.search(r"</head>", doc, re.I):
         doc = re.sub(r"</head>", lambda _: "<link rel=icon href='/favicon.ico'></head>", doc, count=1, flags=re.I)
-    hdr += "<div class=ui-m>"
+    m = _BODY.search(doc)          # after every change to the head: an offset taken earlier would cut inside the inserted tag
+    hdr = header(path) + "<div class=ui-m>"
     doc = doc[:m.end()] + hdr + doc[m.end():] if m else doc + hdr
     tail = "</div>" + FOOT
     return re.sub(r"</body>", lambda _: tail + "</body>", doc, count=1, flags=re.I) if re.search(r"</body>", doc, re.I) else doc + tail
