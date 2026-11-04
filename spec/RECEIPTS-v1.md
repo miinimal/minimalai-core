@@ -61,6 +61,14 @@ the body and the `X-Payment-State` header; `pending` adds `deadline` and `Retry-
 (`docs/protocol/GRAM-402.md`, failure terms version 2). Write budgets of the gateway answer with `X-RateLimit-Limit`,
 `X-RateLimit-Remaining` and `X-RateLimit-Reset` computed from the bucket that just decided — never from a formula.
 
+## The check link (2026-11-04)
+
+Every signed record carries `check: https://ai.minimalcult.org/check`. The page takes a pasted record (or opens one by id:
+`/check/task/<task id>`, `/check/verdict/<verdict id>`, `/check/notary/<notary id>`) and shows whether the signature is valid
+for the published gateway key, what the record says, its delivery status, what the issuer saw and did not verify, and which
+anchor batches cover it. The API behind it is free and needs no key: `POST /v1/receipts/check {"record": {...}}`. The same
+check runs offline with `minimalai_receipt.py` from the open core — the page is the door, not the only way.
+
 ## Anchors beyond TON (2026-11-03)
 
 Once a day the anchor service takes the heads of the public chains (task receipts, notary, verdicts, disputes, the last

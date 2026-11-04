@@ -76,7 +76,7 @@ def make(request_body, response_body, route, attestation, payment=None):
             "key_bound": a.get("reportdata_binds_tls_key"), "image_allowed_by_root": a.get("image_hash_allowed_by_root"),
             "intel_signature_verified": a.get("quote_signature_verified", False), "checked_at": a.get("checked_at"),
         },
-        "gateway_key": public_key_hex(),
+        "gateway_key": public_key_hex(), "check": CHECK_URL,
     }
     if payment:
         payload["payment"] = {k: payment.get(k) for k in ("network", "transaction", "payer", "charged_nano")}
@@ -107,9 +107,13 @@ def verify_with_key(record, pubkey_hex):
     return True
 
 
+CHECK_URL = "https://ai.minimalcult.org/check"   # A1: every record says where anyone can check it (paste the record, or open it by id)
+
+
 def sign(payload):
-    """Sign any record payload with the gateway key (adds gateway_key, returns record with 'sig')."""
+    """Sign any record payload with the gateway key (adds gateway_key and the check link, returns record with 'sig')."""
     payload = {**payload, "gateway_key": public_key_hex()}
+    payload.setdefault("check", CHECK_URL)
     return {**payload, "sig": base64.b64encode(key().sign(canon(payload))).decode()}
 
 
@@ -147,7 +151,7 @@ def make_task(row, decision, prev_sha256, extra=None):
         "poster": pseudonym("key:" + str(row["poster"])) if row["poster"] else None,
         "price_nano": row["price_nano"], "decision": decision,
         "ai_review": (json.loads(review) or {}).get("verdict"),
-        "prev_sha256": prev_sha256, "gateway_key": public_key_hex(),
+        "prev_sha256": prev_sha256, "gateway_key": public_key_hex(), "check": CHECK_URL,
     }
     if extra:
         payload.update(extra)   # e.g. work_order (workorders.py); signed with the rest
