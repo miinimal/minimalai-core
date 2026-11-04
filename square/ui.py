@@ -75,8 +75,10 @@ def empty(text, href="", action=""):
 
 def page(title, path, body, desc="", head_extra=""):
     e = html.escape
+    canon = "https://ai.minimalcult.org" + (path if path.startswith("/") else "/" + path).split("?")[0]
     return (f'<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">'
-            f"<title>{e(title)} — MINIMAL AI</title><meta name=\"description\" content=\"{e(desc or title)}\">"
+            f"<title>{e(title)} — MINIMAL AI</title><meta name=\"description\" content=\"{e(desc or title)}\"><link rel=canonical href=\"{e(canon)}\">"
+            f"<meta property=og:title content=\"{e(title)} — MINIMAL AI\"><meta property=og:description content=\"{e(desc or title)}\"><meta property=og:url content=\"{e(canon)}\"><meta name=twitter:card content=summary_large_image>"
             f"<meta name=theme-color content='#0c0c0e'><link rel=icon href='/favicon.ico'><link rel=icon type=image/svg+xml href='/brand/mark-gold-on-dark.svg'><meta property=og:image content='https://ai.minimalcult.org/brand-og.png'>"
             f"{head_extra}{CSS}</head><body>{header(path)}<main class=ui-m>{body}</main>{FOOT}</body></html>")
 
@@ -130,7 +132,7 @@ def install(app):
         human404 = next((v for k, v in HUMAN_404.items() if p.startswith(k)), None)
         if not ctype.startswith("text/html") and not (resp.status_code == 404 and human404):
             return resp
-        if p in COMPANY_PATHS and (request.headers.get("host") or "").split(":")[0].lower() in SKIP_HOSTS:
+        if (p in COMPANY_PATHS or p.startswith("/blog")) and (request.headers.get("host") or "").split(":")[0].lower() in SKIP_HOSTS:
             return resp
         body = b"".join([chunk async for chunk in resp.body_iterator])
         if resp.status_code == 404 and human404 and not ctype.startswith("text/html"):
