@@ -68,7 +68,7 @@ CREATE TABLE IF NOT EXISTS w_batches(seq INTEGER PRIMARY KEY, id TEXT UNIQUE, ts
     root TEXT, prev_head TEXT, head TEXT, record TEXT, sig TEXT);
 CREATE TABLE IF NOT EXISTS w_proofs(batch_id TEXT, kind TEXT, ts INTEGER, status TEXT, proof TEXT, meta TEXT, error TEXT, PRIMARY KEY(batch_id, kind));
 CREATE TABLE IF NOT EXISTS w_queue(registry TEXT, identifier TEXT, version TEXT, mcp TEXT, added INTEGER, tries INTEGER DEFAULT 0, error TEXT, latest INTEGER DEFAULT 0,
-    PRIMARY KEY(registry, identifier, version));
+    live INTEGER DEFAULT 0, PRIMARY KEY(registry, identifier, version));
 CREATE TABLE IF NOT EXISTS w_probe(endpoint TEXT PRIMARY KEY, object TEXT, version TEXT, next_at INTEGER, fails INTEGER DEFAULT 0, last_ok INTEGER, error TEXT);
 CREATE TABLE IF NOT EXISTS w_state(key TEXT PRIMARY KEY, value TEXT);
 CREATE TABLE IF NOT EXISTS w_count(key TEXT PRIMARY KEY, n INTEGER);
@@ -104,6 +104,19 @@ def _bump(c, key, n=1):
 def _migrate(c):
     """One-time: counters and the change list for a record written before they existed; the leaf index for proofs."""
     c.execute("CREATE INDEX IF NOT EXISTS w_obs_leaf ON w_obs(leaf)")
+    if "live" not in [r[1] for r in c.execute("PRAGMA table_info(w_queue)")]:
+        c.execute("ALTER TABLE w_queue ADD COLUMN live INTEGER DEFAULT 0")
+    if state(c, "fix_backlog_changes_v1") is None and not c.execute("SELECT 1 FROM w_count LIMIT 1").fetchone():
+        set_state(c, "fix_backlog_changes_v1", 0)      # a new record: counted correctly from the start
+    elif state(c, "fix_backlog_changes_v1") is None:
+        # 2026-11-04: package versions drained from the backlog queue in later hours were counted as changes; they are
+        # history, not news. Drop them from the change list and the counters (facts and their chain stay as recorded).
+        bad = c.execute("SELECT count(*) FROM w_changes WHERE object LIKE 'npm:%' OR object LIKE 'pypi:%'").fetchone()[0]
+        c.execute("DELETE FROM w_changes WHERE object LIKE 'npm:%' OR object LIKE 'pypi:%'")
+        c.execute("UPDATE w_objects SET changes=0, last_change=NULL WHERE kind IN ('npm','pypi')")
+        c.execute("UPDATE w_count SET n=max(0, n-?) WHERE key='changes'", (bad,))
+        set_state(c, "fix_backlog_changes_v1", bad)
+        c.commit()
     if c.execute("SELECT 1 FROM w_count LIMIT 1").fetchone() or not c.execute("SELECT 1 FROM w_obs LIMIT 1").fetchone():
         return
     for r in c.execute("SELECT kind, count(*) n FROM w_obs GROUP BY kind").fetchall():
@@ -157,7 +170,7 @@ def body_of(row):
     return json.loads(zlib.decompress(row["body"])) if row["body"] else None
 
 
-def observe(c, obj, kind, version, payload, now, source, meta=None, info=None):
+def observe(c, obj, kind, version, payload, now, source, meta=None, info=None, news=True):
     """Record one fact if it is new. Returns the seq of the new observation, or None when this exact fact is already recorded."""
     digest = sha(payload)
     if c.execute("SELECT 1 FROM w_obs WHERE object=? AND kind=? AND version=? AND digest=?", (obj, kind, version, digest)).fetchone():
@@ -174,7 +187,8 @@ def observe(c, obj, kind, version, payload, now, source, meta=None, info=None):
     info = info or {}
     o = c.execute("SELECT id FROM w_objects WHERE id=?", (obj,)).fetchone()
     # a change is something that moved after we had already seen the object: versions read together in one backfill are history, not news
-    changed = last is not None and kind in CHANGE_KINDS and last["digest"] != digest and last["observed_at"] < now
+    # news=False: the fact comes from the backlog (first registry pass, package queue filled by it), not from the source moving
+    changed = news and last is not None and kind in CHANGE_KINDS and last["digest"] != digest and last["observed_at"] < now
     _bump(c, "obs:" + kind)
     if state(c, "first_observed") is None:
         set_state(c, "first_observed", now)
@@ -255,7 +269,7 @@ def _registry_info(entry):
     return s, off
 
 
-def ingest_entry(c, entry, now):
+def ingest_entry(c, entry, now, live=False):
     """One registry entry (one server version) -> manifest / status observations, package queue, remote probe queue."""
     s, off = _registry_info(entry)
     name, ver = s.get("name"), str(s.get("version") or "")
@@ -268,18 +282,18 @@ def ingest_entry(c, entry, now):
         info["latest"] = ver
     meta = {k: off[k] for k in ("publishedAt", "updatedAt") if off.get(k)}
     n = 0
-    if observe(c, obj, "manifest", ver, s, now, REGISTRY_SOURCE, meta=meta or None, info=info):
+    if observe(c, obj, "manifest", ver, s, now, REGISTRY_SOURCE, meta=meta or None, info=info, news=live):
         n += 1
     st = off.get("status") or "active"
     prev = c.execute("SELECT body FROM w_obs WHERE object=? AND kind='status' AND version=? ORDER BY seq DESC LIMIT 1", (obj, ver)).fetchone()
     prev_st = json.loads(zlib.decompress(prev["body"]))["status"] if prev else ("active" if st == "active" else None)
-    if st != prev_st and observe(c, obj, "status", ver, {"status": st, "changedAt": off.get("statusChangedAt")}, now, REGISTRY_SOURCE, info={"status": st}):
+    if st != prev_st and observe(c, obj, "status", ver, {"status": st, "changedAt": off.get("statusChangedAt")}, now, REGISTRY_SOURCE, info={"status": st}, news=live):
         n += 1
     for p in s.get("packages") or []:
         reg, ident, pv = (p.get("registryType") or "").lower(), p.get("identifier"), str(p.get("version") or "")
         if reg in ("npm", "pypi") and ident and pv and pv != "latest":
-            c.execute("INSERT INTO w_queue(registry, identifier, version, mcp, added, latest) VALUES(?,?,?,?,?,?) "
-                      "ON CONFLICT(registry, identifier, version) DO UPDATE SET latest=max(latest, excluded.latest)", (reg, ident, pv, name, now, 1 if off.get("isLatest") else 0))
+            c.execute("INSERT INTO w_queue(registry, identifier, version, mcp, added, latest, live) VALUES(?,?,?,?,?,?,?) "
+                      "ON CONFLICT(registry, identifier, version) DO UPDATE SET latest=max(latest, excluded.latest)", (reg, ident, pv, name, now, 1 if off.get("isLatest") else 0, 1 if live else 0))
     if off.get("isLatest") and st == "active":
         for r in s.get("remotes") or []:
             url = r.get("url") or ""
@@ -308,7 +322,7 @@ def crawl_registry(c, now, deadline, get=None, pause=None):
         d = get(f"{REGISTRY}/v0.1/servers?" + urllib.parse.urlencode(q))
         for e in d.get("servers") or []:
             entries += 1
-            new += ingest_entry(c, e, now)
+            new += ingest_entry(c, e, now, live=bool(since))
         pages += 1
         cursor = (d.get("metadata") or {}).get("nextCursor")
         set_state(c, "registry_cursor", cursor)
@@ -375,7 +389,7 @@ def _write_packages(c, now, results, done, new, failed):
             if err:
                 raise err
             if observe(c, f"{q['registry']}:{q['identifier']}", "package", q["version"], fact, now, {"npm": "registry.npmjs.org", "pypi": "pypi.org"}[q["registry"]],
-                       meta={"mcp": q["mcp"]}, info={"latest": q["version"], "links": {"mcp": q["mcp"]}}):
+                       meta={"mcp": q["mcp"]}, info={"latest": q["version"], "links": {"mcp": q["mcp"]}}, news=bool(q["live"])):
                 new += 1
             c.execute("DELETE FROM w_queue WHERE registry=? AND identifier=? AND version=?", (q["registry"], q["identifier"], q["version"]))
             done += 1
@@ -738,6 +752,10 @@ def main():
     import signal
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
     signal.signal(signal.SIGTERM, lambda *_: STOP.update(now=True))
+    try:
+        os.nice(int(os.environ.get("WITNESS_NICE", "10")))   # CAP-1: one shared vCPU; the site, bots and signer come first
+    except OSError:
+        pass
     try:
         c = connect()
         r = recover(c)
