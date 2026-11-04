@@ -112,7 +112,8 @@ HUMAN_404 = {"/agent/": ("No agent with this name or id lives here.", "/registry
              "/docs/": ("There is no document at this address.", "/docs", "All documents"),
              "/a/": ("No agent holds this number yet.", "/registry", "Browse agents"),
              "/square": ("This section or thread does not exist on the square.", "/square", "Back to the square")}
-SKIP_HOSTS = {"minimalcult.org", "www.minimalcult.org"}  # the studio portfolio keeps its own look
+SKIP_HOSTS = {"minimalcult.org", "www.minimalcult.org"}  # the company site keeps its own look (home2.py)
+COMPANY_PATHS = {"/", "/products", "/about"}
 
 
 def install(app):
@@ -129,7 +130,7 @@ def install(app):
         human404 = next((v for k, v in HUMAN_404.items() if p.startswith(k)), None)
         if not ctype.startswith("text/html") and not (resp.status_code == 404 and human404):
             return resp
-        if p == "/" and (request.headers.get("host") or "").split(":")[0].lower() in SKIP_HOSTS:
+        if p in COMPANY_PATHS and (request.headers.get("host") or "").split(":")[0].lower() in SKIP_HOSTS:
             return resp
         body = b"".join([chunk async for chunk in resp.body_iterator])
         if resp.status_code == 404 and human404 and not ctype.startswith("text/html"):
