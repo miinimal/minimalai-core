@@ -71,7 +71,16 @@ CREATE TABLE IF NOT EXISTS w_queue(registry TEXT, identifier TEXT, version TEXT,
     PRIMARY KEY(registry, identifier, version));
 CREATE TABLE IF NOT EXISTS w_probe(endpoint TEXT PRIMARY KEY, object TEXT, version TEXT, next_at INTEGER, fails INTEGER DEFAULT 0, last_ok INTEGER, error TEXT);
 CREATE TABLE IF NOT EXISTS w_state(key TEXT PRIMARY KEY, value TEXT);
+CREATE TABLE IF NOT EXISTS w_count(key TEXT PRIMARY KEY, n INTEGER);
+CREATE TABLE IF NOT EXISTS w_changes(seq INTEGER PRIMARY KEY, object TEXT, ts INTEGER, what TEXT);
 """
+# counters and the change list are kept as facts are written: the public pages never scan the observation table
+CHANGE_KINDS = ("manifest", "package", "tools", "status")
+STOP = {"now": False}       # set by SIGTERM: finish the current call, record the run, seal, anchor, exit
+
+
+def go(deadline):
+    return not STOP["now"] and time.time() < deadline
 
 
 # ---------------------------------------------------------------- storage and hashing
@@ -83,7 +92,43 @@ def connect(path=None):
     except sqlite3.OperationalError:
         pass
     c.executescript(SCHEMA)
+    _migrate(c)
     return c
+
+
+def _bump(c, key, n=1):
+    c.execute("INSERT INTO w_count(key, n) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET n=n+excluded.n", (key, n))
+
+
+def _migrate(c):
+    """One-time: counters and the change list for a record written before they existed; the leaf index for proofs."""
+    c.execute("CREATE INDEX IF NOT EXISTS w_obs_leaf ON w_obs(leaf)")
+    if c.execute("SELECT 1 FROM w_count LIMIT 1").fetchone() or not c.execute("SELECT 1 FROM w_obs LIMIT 1").fetchone():
+        return
+    for r in c.execute("SELECT kind, count(*) n FROM w_obs GROUP BY kind").fetchall():
+        _bump(c, "obs:" + r["kind"], r["n"])
+    for r in c.execute("SELECT kind, count(*) n FROM w_objects GROUP BY kind").fetchall():
+        _bump(c, "objects:" + r["kind"], r["n"])
+    _bump(c, "changes", c.execute("SELECT coalesce(sum(changes), 0) FROM w_objects").fetchone()[0])
+    first = c.execute("SELECT min(observed_at) FROM w_obs").fetchone()[0]
+    if first and state(c, "first_observed") is None:
+        set_state(c, "first_observed", first)
+    for o in c.execute("SELECT id, last_change FROM w_objects WHERE last_change IS NOT NULL").fetchall():
+        r = c.execute("SELECT * FROM w_obs WHERE object=? AND observed_at=? AND prev IS NOT NULL ORDER BY seq DESC LIMIT 1", (o["id"], o["last_change"])).fetchone()
+        if r:
+            p = c.execute("SELECT version FROM w_obs WHERE leaf=?", (r["prev"],)).fetchone()
+            c.execute("INSERT OR IGNORE INTO w_changes(seq, object, ts, what) VALUES(?,?,?,?)", (r["seq"], r["object"], r["observed_at"], _what(r["kind"], r["version"], p and p["version"], None)))
+    c.commit()
+
+
+def _what(kind, version, prev_version, payload):
+    if kind == "status":
+        return f"registry status: {(payload or {}).get('status')}"
+    if prev_version is not None and prev_version != version:
+        return f"new version {version}"
+    if kind == "tools":
+        return "tool list changed"
+    return f"{kind} of {version} changed"
 
 
 def canon(obj):
@@ -117,7 +162,7 @@ def observe(c, obj, kind, version, payload, now, source, meta=None, info=None):
     if c.execute("SELECT 1 FROM w_obs WHERE object=? AND kind=? AND version=? AND digest=?", (obj, kind, version, digest)).fetchone():
         c.execute("UPDATE w_objects SET last_seen=? WHERE id=?", (now, obj))
         return None
-    last = c.execute("SELECT leaf, digest, observed_at FROM w_obs WHERE object=? AND kind=? ORDER BY seq DESC LIMIT 1", (obj, kind)).fetchone()
+    last = c.execute("SELECT leaf, digest, observed_at, version FROM w_obs WHERE object=? AND kind=? ORDER BY seq DESC LIMIT 1", (obj, kind)).fetchone()
     rec = {"v": 1, "object": obj, "kind": kind, "version": version, "source": source, "observed_at": iso(now), "digest": digest,
            "prev": last["leaf"] if last else None}
     if meta:
@@ -128,8 +173,15 @@ def observe(c, obj, kind, version, payload, now, source, meta=None, info=None):
     info = info or {}
     o = c.execute("SELECT id FROM w_objects WHERE id=?", (obj,)).fetchone()
     # a change is something that moved after we had already seen the object: versions read together in one backfill are history, not news
-    changed = last is not None and kind in ("manifest", "package", "tools") and last["digest"] != digest and last["observed_at"] < now
+    changed = last is not None and kind in CHANGE_KINDS and last["digest"] != digest and last["observed_at"] < now
+    _bump(c, "obs:" + kind)
+    if state(c, "first_observed") is None:
+        set_state(c, "first_observed", now)
+    if changed:
+        _bump(c, "changes")
+        c.execute("INSERT INTO w_changes(seq, object, ts, what) VALUES(?,?,?,?)", (cur.lastrowid, obj, now, _what(kind, version, last["version"], payload)))
     if not o:
+        _bump(c, "objects:" + obj.split(":", 1)[0])
         c.execute("INSERT INTO w_objects(id, kind, name, title, description, source, first_seen, last_seen, latest, versions, changes, last_change, status, repo, links) "
                   "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                   (obj, obj.split(":", 1)[0], obj.split(":", 1)[1], info.get("title"), info.get("description"), source, now, now, info.get("latest"),
@@ -246,7 +298,7 @@ def crawl_registry(c, now, deadline, get=None, pause=None):
     set_state(c, "registry_pass_started", started)
     pages = entries = new = 0
     complete = False
-    while time.time() < deadline:
+    while go(deadline):
         q = {"limit": "100"}
         if cursor:
             q["cursor"] = cursor
@@ -303,7 +355,7 @@ def _parallel(fn, items):
 
 def crawl_packages(c, now, deadline, get=None, limit=100000):
     done = new = failed = 0
-    while time.time() < deadline and done + failed < limit:
+    while go(deadline) and done + failed < limit:
         rows = c.execute("SELECT * FROM w_queue WHERE tries < 3 AND (added < ? OR tries = 0) ORDER BY latest DESC, tries, added LIMIT ?",
                          (now, min(WORKERS * 8, limit - done - failed))).fetchall()
         if not rows:
@@ -398,7 +450,7 @@ def list_tools(url, post=None, timeout=10):
 def probe_remotes(c, now, deadline, post=None, limit=None):
     ok = new = auth = failed = 0
     limit = limit or PROBES_PER_RUN
-    while time.time() < deadline and ok + auth + failed < limit:
+    while go(deadline) and ok + auth + failed < limit:
         rows = c.execute("SELECT * FROM w_probe WHERE next_at <= ? ORDER BY next_at LIMIT ?", (now, min(WORKERS * 4, limit - ok - auth - failed))).fetchall()
         if not rows:
             break
@@ -537,8 +589,27 @@ def run_once(c, now=None, budget=None, get=None, post=None, adapters=None, upgra
             summary[name] = {"error": f"{type(e).__name__}: {str(e)[:200]}"}
             c.commit()
     summary["finished_at"] = iso(int(time.time()))
+    if STOP["now"]:
+        summary["stopped_early"] = True
     observe(c, "witness:crawler", "run", summary["started_at"], summary, now, "minimalcult.org/witness")
     c.commit()
+    return _finish(c, now, summary, sign=sign, adapters=adapters, upgrade=upgrade, main_db=main_db)
+
+
+def recover(c, now=None, **kw):
+    """At start: facts written by a run that was stopped before its seal are sealed at once (with a run record saying so),
+    so a restart never leaves an hour without a seal."""
+    if not c.execute("SELECT 1 FROM w_obs WHERE batch_id IS NULL LIMIT 1").fetchone():
+        return None
+    now = now or int(time.time())
+    observe(c, "witness:crawler", "run", iso(now) + "/recovered", {"recovered": True, "note": "facts of an interrupted run, sealed at restart",
+                                                                   "unsealed": c.execute("SELECT count(*) FROM w_obs WHERE batch_id IS NULL").fetchone()[0]},
+            now, "minimalcult.org/witness")
+    c.commit()
+    return _finish(c, now, {"recovered": True}, **kw)
+
+
+def _finish(c, now, summary, sign=None, adapters=None, upgrade=None, main_db=None):
     b = seal(c, now, sign)
     sign_pending(c, sign)
     summary["batch"] = b and {k: b[k] for k in ("id", "head", "n", "signed")}
@@ -555,8 +626,18 @@ def run_once(c, now=None, budget=None, get=None, post=None, adapters=None, upgra
 
 
 def main():
+    import signal
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
-    while True:
+    signal.signal(signal.SIGTERM, lambda *_: STOP.update(now=True))
+    try:
+        c = connect()
+        r = recover(c)
+        c.close()
+        if r:
+            log.info("witness recovered: %s", json.dumps(r, default=str)[:800])
+    except Exception as e:  # noqa: BLE001
+        log.exception("witness recover failed: %s", e)
+    while not STOP["now"]:
         start = time.time()
         try:
             c = connect()
@@ -565,7 +646,9 @@ def main():
             log.info("witness run: %s", json.dumps(s, default=str)[:1500])
         except Exception as e:  # noqa: BLE001
             log.exception("witness run failed: %s", e)
-        time.sleep(max(60, 3600 - (time.time() - start)))
+        while not STOP["now"] and time.time() - start < 3600:
+            time.sleep(2)
+    log.info("witness: stopped after sealing")
 
 
 # ---------------------------------------------------------------- reading (gateway: API and pages)
@@ -634,6 +717,18 @@ def obs_view(r, with_body=False):
 
 
 def stats(c):
+    """From the counters kept at write time (constant time); a record without counters is counted the slow way."""
+    if c.execute("SELECT 1 FROM sqlite_master WHERE name='w_count'").fetchone() and c.execute("SELECT 1 FROM w_count LIMIT 1").fetchone():
+        n = {r["key"]: r["n"] for r in c.execute("SELECT key, n FROM w_count").fetchall()}
+        first = state(c, "first_observed")
+        last_b = c.execute("SELECT id, ts, head, n FROM w_batches ORDER BY seq DESC LIMIT 1").fetchone()
+        return {"objects": n.get("objects:mcp", 0) + n.get("objects:npm", 0) + n.get("objects:pypi", 0),
+                "mcp_servers": n.get("objects:mcp", 0), "packages": n.get("objects:npm", 0) + n.get("objects:pypi", 0),
+                "observations": sum(v for k, v in n.items() if k.startswith("obs:") and k != "obs:run"),
+                "tool_lists": n.get("obs:tools", 0), "changes": n.get("changes", 0),
+                "batches": c.execute("SELECT count(*) FROM w_batches").fetchone()[0],
+                "recording_since": iso(int(first)) if first else None, "hours_recorded": c.execute("SELECT count(*) FROM w_batches").fetchone()[0],
+                "last_batch": dict(last_b) if last_b else None, "registry_full_pass": state(c, "registry_full_pass_at") is not None}
     q = lambda sql, *a: c.execute(sql, a).fetchone()[0]
     first = q("SELECT min(observed_at) FROM w_obs")
     last_b = c.execute("SELECT id, ts, head, n FROM w_batches ORDER BY seq DESC LIMIT 1").fetchone()
@@ -726,6 +821,13 @@ def search(c, name=None, q=None, kind=None, order="change", limit=50, offset=0):
 
 
 def recent_changes(c, limit=20):
+    if c.execute("SELECT 1 FROM sqlite_master WHERE name='w_changes'").fetchone():
+        out = []
+        for ch in c.execute("SELECT * FROM w_changes ORDER BY seq DESC LIMIT ?", (limit,)).fetchall():
+            r = c.execute("SELECT * FROM w_obs WHERE seq=?", (ch["seq"],)).fetchone()
+            if r:
+                out.append({**obs_view(r), "what": ch["what"]})
+        return out
     rows = c.execute("SELECT * FROM w_obs WHERE prev IS NOT NULL AND kind IN ('manifest','package','tools','status') ORDER BY seq DESC LIMIT ?", (limit * 3,)).fetchall()
     out = []
     for r in rows:
