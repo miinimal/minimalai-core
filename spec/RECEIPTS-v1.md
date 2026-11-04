@@ -80,6 +80,23 @@ with its anchors, their status and a verification recipe; `GET /v1/anchors/{batc
 hash-linked, so the head commits to everything before it). Forging a record would mean breaking several networks at once.
 Sigstore Rekor (public transparency log): a `hashedrekord` entry with sha256 of the root bytes and an ECDSA P-256 signature over them (a separate key, because the digest-only type cannot verify PureEdDSA); the entry uuid and log index are in the proof.
 
+## Post-quantum hybrid signature (2026-11-04)
+
+NIST IR 8547 (final, 27 October 2026) deprecates RSA, ECDSA and EdDSA after 2030 and disallows them after 2035. Records
+issued from 4 November 2026 carry a second signature, ML-DSA-65 (FIPS 204), next to Ed25519. The construction keeps every
+existing Ed25519 verifier working:
+
+1. The payload gets `pq_key`: SHA-256 (hex) of the raw ML-DSA-65 public key.
+2. ML-DSA-65 signs the canonical payload. The payload gets `pq`: `{"alg": "ML-DSA-65", "sig": "<base64>"}`.
+3. Ed25519 signs the canonical payload including `pq`, exactly as before, into `sig`.
+
+Post-quantum check: remove `sig` and `pq`, verify `pq.sig` over the canonical rest with the key published as
+`receipt_key_mldsa65` in `/.well-known/minimalai.json`, and confirm that its SHA-256 equals `pq_key`. A party able to forge
+Ed25519 signatures can re-sign changed content with Ed25519, but the ML-DSA-65 check fails. A record without `pq` was
+issued before this date (or by a signer without the post-quantum key) and is checked with Ed25519 alone. Hash-based
+anchors (OpenTimestamps) of the chain heads remain valid in any case. SDK: `minimalai_receipt.verify_pq(record, key_hex)`
+(needs `cryptography>=50`). Root keys on SLH-DSA (FIPS 205) and the re-signing schedule of older records are the next step.
+
 ## Record kinds
 
 ### Answer receipt (`kind` absent)
@@ -192,7 +209,7 @@ python minimalai_receipt.py receipt.json --issuer https://ai.minimalcult.org --d
 
 ## Known limits of v1
 
-- One issuer key, no rotation format yet. A rotation will be announced as a record signed by the old key and anchored.
+- One issuer key per algorithm (Ed25519, ML-DSA-65), no rotation format yet. A rotation will be announced as a record signed by the old key and anchored.
 - Answer receipts are not chained (volume); they are checked one by one. Task receipts and disputes are chained.
 - Dispute resolution is decided by the issuer. The chain makes the decision public and permanent, not neutral. An
   independent reviewer pool is a candidate for v2.

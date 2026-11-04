@@ -694,7 +694,8 @@ def proof(c, seq):
         "leaf = sha256(canonical JSON of `observation`: keys sorted, no spaces, UTF-8) — equals `leaf`",
         "body_sha256 = sha256(canonical JSON of the recorded body) — GET /v1/witness/observation?seq=N&body=1",
         "fold `merkle_path` from sha256(0x00||leaf): sibling on side L -> sha256(0x01||sibling||acc), side R -> sha256(0x01||acc||sibling); result = batch.record.merkle_root",
-        "head = sha256(canonical JSON of batch.record) — equals batch.head; batch.signature is an Ed25519 signature of the gateway key (GET /v1/attestation)",
+        "head = sha256(canonical JSON of batch.record) — equals batch.head; batch.signature is the hybrid gateway signature: Ed25519 over the record "
+        "without 'sig', ML-DSA-65 (FIPS 204) in `pq` over the record without 'sig' and 'pq' (keys: /.well-known/minimalai.json)",
         "each anchor fixes the 32 head bytes: OpenTimestamps (`ots verify`), RFC 3161 (`openssl ts -verify`), Sigstore Rekor (entry hash = sha256 of the head bytes); the daily batch at /v1/anchors adds TON and EAS"]
     return out
 

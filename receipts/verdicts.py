@@ -172,8 +172,12 @@ def check_receipt(claim):
         Ed25519PublicKey.from_public_bytes(bytes.fromhex(gk)).verify(base64.b64decode(rec["sig"]), receipts.canon({k: v for k, v in rec.items() if k != "sig"}))
     except Exception:  # noqa: BLE001
         return "false", {"receipt_id": receipts.receipt_id(rec)}, ["the signature does not match the record"], []
-    return "true", {"receipt_id": receipts.receipt_id(rec), "kind": rec.get("kind", "answer"), "ts": rec.get("ts")}, \
-        ["the signature is valid for the pinned gateway key"], ["what the record claims is as true as the issuer (see its own distrust block)"]
+    pq = receipts.verify_pq(rec, receipts.pq_public_key_hex() or "00")      # W0: hybrid Ed25519 + ML-DSA-65
+    if pq is False:
+        return "false", {"receipt_id": receipts.receipt_id(rec)}, ["the post-quantum (ML-DSA-65) signature does not match the record"], []
+    return "true", {"receipt_id": receipts.receipt_id(rec), "kind": rec.get("kind", "answer"), "ts": rec.get("ts"), "post_quantum": bool(pq)}, \
+        ["the signature is valid for the pinned gateway key"] + (["the ML-DSA-65 (FIPS 204) signature is valid for the published post-quantum key"] if pq else []), \
+        ["what the record claims is as true as the issuer (see its own distrust block)"]
 
 
 async def run_check(claim, fetch_txs=None, client=None):

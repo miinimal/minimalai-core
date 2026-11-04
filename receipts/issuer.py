@@ -25,6 +25,12 @@ _key = None
 _pub = None
 
 
+PQ_KEY_PATH = os.environ.get("RECEIPT_PQ_KEY_PATH", os.path.join(os.path.dirname(KEY_PATH) or ".", "receipt_mldsa65.seed"))
+PQ_ALG = "ML-DSA-65"
+_pq_key = None
+_pq_pub = None          # hex, "" = the signer has no post-quantum key
+
+
 class SignerUnavailable(RuntimeError):
     """The isolated signer did not answer: the caller must fail the request, never fall back to a new key."""
 
@@ -115,6 +121,71 @@ DELIVERY = {
 }
 
 
+# ---- W0: post-quantum hybrid. NIST IR 8547 (final 27.10.2026): EdDSA deprecated after 2030, disallowed after 2035.
+# Construction (backward compatible with every Ed25519 verifier already in use, which checks canonical JSON without 'sig'):
+#   1. payload P gets `pq_key` = sha256 of the raw ML-DSA-65 public key;
+#   2. ML-DSA-65 signs canon(P);  P' = P + {"pq": {"alg": "ML-DSA-65", "sig": base64}};
+#   3. Ed25519 signs canon(P') as before -> record = P' + {"sig": ...}.
+# Post-quantum check: drop `sig` and `pq`, verify pq.sig over the canonical rest with the published key whose sha256 = pq_key.
+# A forger with a quantum computer can make a new Ed25519 signature, but not an ML-DSA one over changed content.
+def _pq_local():
+    global _pq_key
+    from cryptography.hazmat.primitives.asymmetric import mldsa
+    if _pq_key is None:
+        if not os.path.exists(PQ_KEY_PATH):
+            os.makedirs(os.path.dirname(PQ_KEY_PATH) or ".", exist_ok=True)
+            with open(PQ_KEY_PATH, "wb") as f:
+                f.write(os.urandom(32))
+            os.chmod(PQ_KEY_PATH, 0o600)
+        _pq_key = mldsa.MLDSA65PrivateKey.from_seed_bytes(open(PQ_KEY_PATH, "rb").read())
+    return _pq_key
+
+
+def pq_public_key_hex():
+    """Hex of the raw ML-DSA-65 public key, or "" when the signer runs without one (Ed25519-only records)."""
+    global _pq_pub
+    if _pq_pub is None:
+        if SIGNER_SOCKET:
+            _pq_pub = _signer_call({"op": "pub"}).get("pub_mldsa65") or ""
+        else:
+            if os.environ.get("RECEIPT_PQ", "1") != "1":
+                return ""
+            _pq_pub = _pq_local().public_key().public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw).hex()
+    return _pq_pub
+
+
+def raw_sign_pq(message):
+    if SIGNER_SOCKET:
+        return base64.b64decode(_signer_call({"op": "sign_pq", "msg": base64.b64encode(bytes(message)).decode()})["sig"])
+    return _pq_local().sign(bytes(message))
+
+
+def _seal(payload):
+    """Hybrid signature of a record payload (W0 construction above); Ed25519 only when no ML-DSA key is available."""
+    payload = {k: v for k, v in payload.items() if k not in ("sig", "pq", "pq_key")}
+    pub = pq_public_key_hex()
+    if pub:
+        payload["pq_key"] = hashlib.sha256(bytes.fromhex(pub)).hexdigest()
+        payload["pq"] = {"alg": PQ_ALG, "sig": base64.b64encode(raw_sign_pq(canon(payload))).decode()}
+    return {**payload, "sig": base64.b64encode(raw_sign(canon(payload))).decode()}
+
+
+def verify_pq(record, pq_pub_hex):
+    """True: the ML-DSA-65 signature is valid for the published key; False: invalid or key mismatch; None: no PQ signature."""
+    pq = record.get("pq")
+    if not isinstance(pq, dict) or "pq_key" not in record:
+        return None
+    try:
+        if pq.get("alg") != PQ_ALG or record["pq_key"] != hashlib.sha256(bytes.fromhex(pq_pub_hex)).hexdigest():
+            return False
+        from cryptography.hazmat.primitives.asymmetric import mldsa
+        rest = {k: v for k, v in record.items() if k not in ("sig", "pq")}
+        mldsa.MLDSA65PublicKey.from_public_bytes(bytes.fromhex(pq_pub_hex)).verify(base64.b64decode(pq["sig"]), canon(rest))
+    except Exception:  # noqa: BLE001
+        return False
+    return True
+
+
 def delivery(status, observed, assumed, by=None, ack=None):
     """`delivery` + `distrust` blocks: what we observed ourselves versus what the next agent should not take on faith."""
     return {"delivery": {"status": status, "by": by, "ack": ack, "meaning": DELIVERY[status]},
@@ -142,8 +213,7 @@ def make(request_body, response_body, route, attestation, payment=None):
                             observed=["request hash", "response hash", "route and model", "time of issue"] + (["payment transaction on chain"] if payment else []),
                             assumed=["the client received these bytes (confirm with POST /v1/receipts/{receipt_id}/ack)", "the answer is correct"],
                             ack="POST /v1/receipts/{receipt_id}/ack"))
-    sig = raw_sign(canon(payload))
-    return {**payload, "sig": base64.b64encode(sig).decode()}
+    return _seal(payload)
 
 
 def receipt_id(receipt):
@@ -172,7 +242,7 @@ def sign(payload):
     """Sign any record payload with the gateway key (adds gateway_key and the check link, returns record with 'sig')."""
     payload = {**payload, "gateway_key": public_key_hex()}
     payload.setdefault("check", CHECK_URL)
-    return {**payload, "sig": base64.b64encode(raw_sign(canon(payload))).decode()}
+    return _seal(payload)
 
 
 def verify(receipt, request_body=None, response_body=None):
@@ -219,5 +289,4 @@ def make_task(row, decision, prev_sha256, extra=None):
                             if status != "failed" else ["the submission hash was recorded", f"the decision '{decision}' was recorded"],
                             assumed=["the submission text matches its hash (only the hash is signed)", "the worker is the holder of its key"]
                             + (["the poster saw the work: it was closed by a rule, not by the poster's word"] if status == "maybe_sent" else [])))
-    sig = raw_sign(canon(payload))
-    return {**payload, "sig": base64.b64encode(sig).decode()}
+    return _seal(payload)

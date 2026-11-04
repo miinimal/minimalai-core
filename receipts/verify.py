@@ -42,6 +42,26 @@ def verify(record, pinned_key_hex):
     return True
 
 
+def verify_pq(record, pq_key_hex):
+    """Post-quantum half of the hybrid signature (records issued since 4 Nov 2026). True: the ML-DSA-65 (FIPS 204) signature
+    over canonical JSON without 'sig' and 'pq' is valid and record['pq_key'] is sha256 of this key; False: invalid;
+    None: the record carries no post-quantum signature. Key: receipt_key_mldsa65 in /.well-known/minimalai.json.
+    Needs cryptography>=50."""
+    pq = record.get("pq")
+    if not isinstance(pq, dict) or "pq_key" not in record:
+        return None
+    try:
+        from cryptography.hazmat.primitives.asymmetric import mldsa
+        key = bytes.fromhex(pq_key_hex)
+        if pq.get("alg") != "ML-DSA-65" or record["pq_key"] != hashlib.sha256(key).hexdigest():
+            return False
+        rest = {k: v for k, v in record.items() if k not in ("sig", "pq")}
+        mldsa.MLDSA65PublicKey.from_public_bytes(key).verify(base64.b64decode(pq["sig"]), canon(rest))
+    except Exception:  # noqa: BLE001
+        return False
+    return True
+
+
 def check_bodies(receipt, request=None, response=None):
     """Answer receipts commit to the exact request and response (response without its 'minimalai' envelope)."""
     if request is not None and sha256(request) != receipt.get("request_sha256"):
