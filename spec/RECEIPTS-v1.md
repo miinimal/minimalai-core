@@ -78,7 +78,7 @@ Attestation Service on Base (schema `bytes32 root,string source`; Base Sepolia f
 with its anchors, their status and a verification recipe; `GET /v1/anchors/{batch}/{kind}` downloads the raw proof (`.ots`,
 `.tsr`). A record is covered by a batch when its chain head at batch time is at or after the record (the chain is
 hash-linked, so the head commits to everything before it). Forging a record would mean breaking several networks at once.
-Sigstore Rekor is planned once the `rekord` type is confirmed to accept our Ed25519 key.
+Sigstore Rekor (public transparency log): a `hashedrekord` entry with sha256 of the root bytes and an ECDSA P-256 signature over them (a separate key, because the digest-only type cannot verify PureEdDSA); the entry uuid and log index are in the proof.
 
 ## Record kinds
 

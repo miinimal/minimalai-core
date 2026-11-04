@@ -26,6 +26,7 @@ import json
 import logging
 import os
 import time
+import urllib.error
 import urllib.request
 
 log = logging.getLogger("anchors")
@@ -153,6 +154,70 @@ def tsa_stamp(root_hex, url=None, timeout=20, post=None):
                                                          "verify": f"openssl ts -verify -digest {imprint} -sha256 -in <file>.tsr -CAfile cacert.pem  (imprint = sha256 of the 32 root bytes; CA: {TSA_CA_URL})"}
 
 
+# ---- Sigstore Rekor (C1). Facts read 2026-11-04 from sigstore/rekor openapi.yaml and docs: v1 write API POST /api/v1/log/entries with a
+# ProposedEntry {kind, apiVersion, spec}; hashedrekord stores only the sha256 of the artifact, so the signature must be verifiable from the
+# digest — an ECDSA P-256 signature (SHA-256 inside) is, a PureEdDSA one is not; hence a separate ECDSA key for this anchor. The response
+# is a LogEntry: logID, logIndex, integratedTime, body, verification{signedEntryTimestamp, inclusionProof{rootHash, treeSize, hashes, checkpoint}}.
+# Rekor v2 (rekor-tiles: /api/v2/log/entries, hashedrekord 0.0.2, instance URL rotates ~6 months via TUF) is the successor; when v1
+# refuses, the failure is recorded and the recipe switches — nothing else breaks.
+REKOR_URL = os.environ.get("REKOR_URL", "https://rekor.sigstore.dev")
+REKOR_KEY = os.environ.get("REKOR_KEY", "/wallets/rekor.key")
+
+
+def rekor_key(create=True, path=None):
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric import ec
+    path = path or REKOR_KEY
+    try:
+        return serialization.load_pem_private_key(open(path, "rb").read(), password=None)
+    except (OSError, ValueError):
+        if not create:
+            raise
+    k = ec.generate_private_key(ec.SECP256R1())
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    with open(path, "wb") as f:
+        f.write(k.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption()))
+    try:
+        os.chmod(path, 0o600)
+    except OSError:
+        pass
+    return k
+
+
+def rekor_upload(root_hex, key=None, url=None, timeout=30, post=None):
+    """hashedrekord v0.0.1: digest = sha256(root bytes), ECDSA P-256 signature over the root bytes, PEM public key."""
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import ec
+    key = key or rekor_key()
+    artifact = bytes.fromhex(root_hex)
+    digest = hashlib.sha256(artifact).hexdigest()
+    sig = key.sign(artifact, ec.ECDSA(hashes.SHA256()))
+    pem = key.public_key().public_bytes(serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo)
+    entry = {"kind": "hashedrekord", "apiVersion": "0.0.1", "spec": {"data": {"hash": {"algorithm": "sha256", "value": digest}},
+                                                                      "signature": {"content": base64.b64encode(sig).decode(), "publicKey": {"content": base64.b64encode(pem).decode()}}}}
+    body = json.dumps(entry).encode()
+    u = (url or REKOR_URL).rstrip("/") + "/api/v1/log/entries"
+    if post:
+        status, raw = post(u, body)
+    else:
+        rq = urllib.request.Request(u, data=body, method="POST", headers={"Content-Type": "application/json", "Accept": "application/json", "User-Agent": "minimalai-anchors/1"})
+        try:
+            with urllib.request.urlopen(rq, timeout=timeout) as r:
+                status, raw = r.status, r.read()
+        except urllib.error.HTTPError as e:
+            status, raw = e.code, e.read()
+    if status not in (200, 201):
+        raise RuntimeError(f"rekor {status}: {raw[:200].decode('utf-8', 'replace')}")
+    d = json.loads(raw)
+    uuid, le = next(iter(d.items()))
+    ver = le.get("verification") or {}
+    meta = {"log": u.rsplit("/api", 1)[0], "uuid": uuid, "log_index": le.get("logIndex"), "log_id": le.get("logID"), "integrated_time": le.get("integratedTime"),
+            "digest_sha256": digest, "tree_size": (ver.get("inclusionProof") or {}).get("treeSize"),
+            "verify": f"GET {u}/{uuid} — the entry's data.hash.value equals sha256 of the 32 root bytes; `rekor-cli verify --uuid {uuid}` checks inclusion and the signed entry timestamp"}
+    proof = json.dumps({"uuid": uuid, "entry": le, "artifact_hex": root_hex, "public_key_pem": pem.decode()})
+    return "attested", base64.b64encode(proof.encode()).decode(), meta
+
+
 def eas_attest(root_hex, acct, chain=84532, rpc=None, dry=False):
     """One EAS attestation of the root on Base (Sepolia first). Registers the schema once (uid kept next to the database)."""
     import erc8004 as E
@@ -206,7 +271,7 @@ def run(c, acct=None, now=None, adapters=None, eas_chain=84532, rpc=None, log_fn
     if b:
         out["batch"] = b["id"]
         say(f"anchors: batch {b['id']} root {b['root'][:16]}… over {len(b['leaves'])} heads")
-        ad = adapters or {"opentimestamps": lambda root: ots_submit(root), "rfc3161": lambda root: tsa_stamp(root)}
+        ad = adapters or {"opentimestamps": lambda root: ots_submit(root), "rfc3161": lambda root: tsa_stamp(root), "rekor": lambda root: rekor_upload(root)}
         if acct is not None and "eas" not in (adapters or {}):
             ad["eas"] = lambda root: eas_attest(root, acct, eas_chain, rpc)
         for kind, fn in ad.items():
@@ -231,6 +296,25 @@ def run(c, acct=None, now=None, adapters=None, eas_chain=84532, rpc=None, log_fn
                 out["upgraded"] += 1
         except Exception as e:  # noqa: BLE001
             say(f"anchors: upgrade {row['batch_id']}: {e}")
+    c.commit()
+    return out
+
+
+def backfill(c, kind, fn, now=None, limit=3):
+    """A new adapter catches up on recent batches that have no proof of its kind yet (or a failed one); failures are recorded."""
+    now = now or int(time.time())
+    c.executescript(SCHEMA)
+    rows = c.execute("SELECT b.id, b.root FROM anchor_batches b LEFT JOIN anchor_proofs p ON p.batch_id=b.id AND p.kind=? "
+                     "WHERE p.batch_id IS NULL OR p.status LIKE 'failed%' ORDER BY b.ts DESC LIMIT ?", (kind, limit)).fetchall()
+    out = {}
+    for b in rows:
+        try:
+            status, proof, meta = fn(b["root"])
+            c.execute("INSERT OR REPLACE INTO anchor_proofs(batch_id, kind, ts, status, proof, meta, error) VALUES(?,?,?,?,?,?,NULL)", (b["id"], kind, now, status, proof, json.dumps(meta, default=str)))
+            out[b["id"]] = status
+        except Exception as e:  # noqa: BLE001
+            c.execute("INSERT OR REPLACE INTO anchor_proofs(batch_id, kind, ts, status, proof, meta, error) VALUES(?,?,?,?,?,?,?)", (b["id"], kind, now, "failed", "", "{}", str(e)[:300]))
+            out[b["id"]] = "failed: " + str(e)[:80]
     c.commit()
     return out
 
@@ -263,6 +347,7 @@ def setup(app, db):
                                         "opentimestamps": "download the proof, `ots verify` it against the 32 root bytes; pending until a Bitcoin block includes it",
                                         "rfc3161": "download the proof (.tsr), `openssl ts -verify -digest <sha256 of the root bytes> -sha256 -in proof.tsr -CAfile cacert.pem` with the TSA's CA",
                                         "eas": "open the attestation on EAS scan: the `root` field equals the batch root",
+                                        "rekor": "the Sigstore Rekor entry (uuid in the proof) stores sha256 of the 32 root bytes and an ECDSA P-256 signature over them; `rekor-cli verify --uuid <uuid>` checks inclusion",
                                         "ton": "the notary head is written to TON daily (GET /v1/notary/chain → ton_anchor)"},
                 "principle": "forging a record would mean breaking several networks at once; our hash lives in other people's ecosystems"}
 
@@ -272,6 +357,6 @@ def setup(app, db):
             r = c.execute("SELECT proof, status FROM anchor_proofs WHERE batch_id=? AND kind=?", (bid[:24], kind[:24])).fetchone()
         if not r or not r["proof"]:
             raise HTTPException(404, "no such proof")
-        raw = base64.b64decode(r["proof"]) if kind in ("opentimestamps", "rfc3161") else r["proof"].encode()
-        ext = {"opentimestamps": "ots", "rfc3161": "tsr"}.get(kind, "txt")
+        raw = base64.b64decode(r["proof"]) if kind in ("opentimestamps", "rfc3161", "rekor") else r["proof"].encode()
+        ext = {"opentimestamps": "ots", "rfc3161": "tsr", "rekor": "json"}.get(kind, "txt")
         return Response(raw, media_type="application/octet-stream", headers={"Content-Disposition": f'attachment; filename="{bid}.{ext}"', "X-Anchor-Status": r["status"]})
