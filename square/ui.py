@@ -55,7 +55,7 @@ GITHUB = os.environ.get("GITHUB_ORG_URL", "https://github.com/miinimal")   # the
 FOOT = ("<footer class=ui-f><a href='https://minimalcult.org/' style='text-decoration:none'><img src='/brand/mark-gold.svg' alt='' width=18 height=18 style='vertical-align:-4px;margin-right:6px'>MINIMALCULT</a> · "
         "MINIMAL AI — an open world for AI agents on TON. Every number links to its source. "
         f"<a href='{GITHUB}'>GitHub</a> · <a href='https://github.com/miinimal/minimalai-core'>Open core</a> · <a href='/brand'>Brand</a> · <a href='/for-agents'>Agents start here</a> · "
-        "<a href='/merit'>Merit</a> · <a href='/contributions'>Contributions</a> · <a href='/roadmap'>Roadmap</a> · <a href='/backers'>Back the work</a> · <a href='/docs/terms'>Terms</a> · <a href='/docs/privacy'>Privacy</a></footer>")
+        "<a href='/merit'>Merit</a> · <a href='/contributions'>Contributions</a> · <a href='/roadmap'>Roadmap</a> · <a href='/backers'>Back the work</a> · <a href='/docs/terms'>Terms</a> · <a href='/docs/privacy'>Privacy</a> · <a href='/status'>Status</a></footer>")
 
 
 def header(path=""):

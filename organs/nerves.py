@@ -324,6 +324,17 @@ def sensors(c, now, fetch=None):
             out.append(sp)
     except Exception as e:  # noqa: BLE001
         log.warning("spend sensor: %s", e)
+    bk = os.path.join(os.path.dirname(os.path.abspath(os.environ.get("MINIMALAI_DB", "./x.db"))), "backup_last.json")
+    try:   # block O-1: encrypted daily backups (ops/backup.py writes the manifest after each run)
+        with open(bk) as f:
+            last_bk = json.load(f).get("ts") or 0
+        if now - last_bk > 36 * 3600:
+            out.append(("backup_stale", 7, f"последняя резервная копия {int((now - last_bk) / 3600)} ч назад — cron ops/backup.py не идёт", "/status"))
+    except FileNotFoundError:
+        if os.environ.get("BACKUP_EXPECTED") == "1":
+            out.append(("backup_missing", 7, "резервных копий нет: ops/backup.py ни разу не отработал", "/status"))
+    except Exception as e:  # noqa: BLE001
+        out.append(("backup_unreadable", 5, f"манифест копий не читается: {str(e)[:80]}", "/status"))
     try:   # block I: the US one-year grace period of disclosed candidate inventions
         import ip_watch
         ip = ip_watch.sensor(now)
