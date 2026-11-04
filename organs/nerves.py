@@ -450,8 +450,20 @@ def ask_model(event):
     return {"importance": imp, "for_us": str(j.get("for_us") or "")[:300], "task": (str(j["task"])[:300] if j.get("task") else None), "model": used}
 
 
+def supersede(c):
+    """Only the newest unrated change of a source is worth a model call: an older one from the same source has been overtaken
+    (a feed that moved twice before it was rated). The older ones are kept, marked 'superseded', never sent to the model."""
+    n = 0
+    for (src,) in c.execute("SELECT source FROM nerves_events WHERE status='new' AND importance IS NULL GROUP BY source HAVING count(*)>1").fetchall():
+        newest = c.execute("SELECT max(id) FROM nerves_events WHERE source=? AND status='new' AND importance IS NULL", (src,)).fetchone()[0]
+        n += c.execute("UPDATE nerves_events SET status='superseded' WHERE source=? AND status='new' AND importance IS NULL AND id<?",
+                       (src, newest)).rowcount
+    return n
+
+
 def rate_new(c, now, model=None):
     ask = model or ask_model
+    supersede(c)
     n = 0
     for ev in c.execute("SELECT * FROM nerves_events WHERE status='new' AND importance IS NULL ORDER BY id").fetchall():
         if budget_left(c, now) <= 0:
