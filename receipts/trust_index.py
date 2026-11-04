@@ -80,7 +80,7 @@ proofs are anchored. Every number comes from the public ledgers; every link lead
 <a href="/v1/anchors">All batches with proofs and recipes</a>.</p>
 <h2>Check anything</h2>
 <p>Paste a record at <a href="/check">/check</a>, or verify it offline with <code>minimalai_receipt.py</code> from the <a href="https://github.com/miinimal/minimalai-core">open core</a>.
-Notary records: {d['notary']['records']} · disputes: {d['disputes']}. JSON of this page: <a href="/v1/trust">/v1/trust</a>.</p>
+Notary records: {d['notary']['records']} · disputes: {d['disputes']}. JSON of this page: <a href="/v1/trust">/v1/trust</a>. What we noticed outside and did about it: <a href="/nerves">nervous system</a>.</p>
 <style>.kpis{{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin:14px 0}}.kpi{{background:#16161a;border:1px solid #2a2a30;border-radius:10px;padding:12px}}.kpi b{{display:block;font-size:26px;color:#e8c26a}}.kpi span{{color:#a3a3a8;font-size:13px}}</style>"""
     return ui.page("Agent trust index", "/trust", body, "Live numbers of the MINIMAL AI trust layer: receipts, verdicts, acknowledgements, anchors, linked identities")
 

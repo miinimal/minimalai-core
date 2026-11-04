@@ -22,6 +22,8 @@ MANIFEST = [
     ("docs/protocol/CUSTODY.md", "spec/CUSTODY.md"),
     ("docs/protocol/ERC-8004.md", "spec/ERC-8004.md"),
     ("docs/protocol/VERIFY.md", "spec/VERIFY.md"),
+    ("docs/NERVES.md", "docs/NERVES.md"),
+    ("gateway/nerves.py", "organs/nerves.py"),
     ("gateway/verify.py", "receipts/verdicts.py"),
     ("gateway/anchors.py", "receipts/anchors.py"),
     ("gateway/trust.py", "receipts/trust_index.py"),
