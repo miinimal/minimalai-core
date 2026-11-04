@@ -45,7 +45,7 @@ FREE_PER_DAY = int(os.environ.get("CHECK_FREE_PER_DAY", "100"))
 CHECK_PRICE_NANO = int(os.environ.get("CHECK_PRICE_NANO", "5000000"))      # 0.005 GRAM, test price
 PER_ID_DAY = int(os.environ.get("CHECK_PER_ID_DAY", "20000"))
 RECENT_S = 30 * 86400
-TYPES = ("mcp_tool", "package", "url", "ton_address", "model_endpoint")
+TYPES = ("mcp_server", "mcp_tool", "package", "url", "ton_address", "model_endpoint")   # mcp_tool: alias of mcp_server
 BASE = "https://ai.minimalcult.org"
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS witness_checks(id TEXT PRIMARY KEY, seq INTEGER, ts INTEGER, payer TEXT, type TEXT, target TEXT, status TEXT,
@@ -69,7 +69,7 @@ def _object_facts(c, oid, now):
     o = c.execute("SELECT * FROM w_objects WHERE id=?", (oid,)).fetchone()
     if not o:
         return None
-    facts = {"object": oid, "witnessed_since": W.iso(o["first_seen"]), "last_seen": W.iso(o["last_seen"]), "versions": o["versions"],
+    facts = {"object": oid, "record_id": W.rec_id(oid), "record_url": f"{BASE}/v1/records/{W.rec_id(oid)}", "witnessed_since": W.iso(o["first_seen"]), "last_seen": W.iso(o["last_seen"]), "versions": o["versions"],
              "latest": o["latest"], "registry_status": o["status"], "history": _href(oid)}
     ch = c.execute("SELECT c.seq, c.ts, c.what, o.kind FROM w_changes c JOIN w_obs o ON o.seq=c.seq WHERE c.object=? AND c.ts>? ORDER BY c.seq DESC LIMIT 20",
                    (oid, now - RECENT_S)).fetchall()
@@ -188,7 +188,7 @@ def run(c_w, claim, now):
         return check_ton_address(target)
     if c_w is None:
         return "unverifiable", {"note": "the witness record is starting"}, [], []
-    if t == "mcp_tool":
+    if t in ("mcp_server", "mcp_tool"):
         return check_mcp_tool(c_w, target, now)
     if t == "package":
         return check_package(c_w, target, now, claim.get("version"), claim.get("sha256"), claim.get("integrity"), claim.get("shasum"))
@@ -209,21 +209,24 @@ def clean(b):
     return out
 
 
-def record(c, claim, status, facts, changes, flags, payer, charged, head, now):
+def record(c, claim, status, facts, changes, flags, payer, price, head, now):
+    """The signed check record (official names, 04.11): kind `check`, issuer MINIMALCULT, id chk_, price as integer minimal
+    units with a currency code. Records issued before (kind witness_check, wc_ ids) stay valid and retrievable."""
     c.executescript(SCHEMA)
     prev = c.execute("SELECT sha256 FROM witness_checks ORDER BY seq DESC LIMIT 1").fetchone()
     seq = (c.execute("SELECT max(seq) FROM witness_checks").fetchone()[0] or 0) + 1
-    cid = "wc_" + uuid.uuid4().hex[:16]
-    observed = ["the witness record at the time of the check", "the hashes and changes listed in `facts` and `changes`"]
-    rec = receipts.sign({"v": 2, "kind": "witness_check", "issuer": "MINIMALCULT Witness", "ts": now, "check_id": cid, "type": claim["type"],
+    cid = "chk_" + uuid.uuid4().hex[:24]
+    observed = ["the record at the time of the check", "the hashes and changes listed in `facts` and `changes`"]
+    rec = receipts.sign({"v": 2, "kind": "check", "issuer": "MINIMALCULT", "ts": now, "created": W.iso(now), "check_id": cid, "type": claim["type"],
                          "target": claim["target"], "query": claim, "status": status, "flags": flags, "facts": facts, "changes": changes,
-                         "record_head": head, "client": receipts.pseudonym(payer), "price_nano": charged,
+                         "record_head": head, "client": receipts.pseudonym(payer), "price": price,
                          "prev_sha256": prev[0] if prev else None,
                          **receipts.delivery("executed", observed=observed,
                                              assumed=["no history is not a verdict; a fact class is not a judgement of intent",
                                                       "the record describes what the public sources served when we read them"])})
+    amount = price["amount"] if price and price.get("currency") == "gram" else 0
     c.execute("INSERT INTO witness_checks(id, seq, ts, payer, type, target, status, charged_nano, sha256, body) VALUES(?,?,?,?,?,?,?,?,?,?)",
-              (cid, seq, now, payer, claim["type"], claim["target"][:400], status, charged, receipts.sha256(rec), json.dumps(rec, ensure_ascii=False, sort_keys=True)))
+              (cid, seq, now, payer, claim["type"], claim["target"][:400], status, amount, receipts.sha256(rec), json.dumps(rec, ensure_ascii=False, sort_keys=True)))
     try:
         import notary
         notary.queue_answer(c, receipts.receipt_id(rec))
@@ -232,20 +235,41 @@ def record(c, claim, status, facts, changes, flags, payer, charged, head, now):
     return rec
 
 
+INTERNAL_KEY = os.environ.get("CHECKS_INTERNAL_KEY") or os.environ.get("SELLER_INTERNAL_KEY", "")   # the paid Base service (basepay/)
+
+
+def internal_payment(request):
+    """A check already paid on Base through x402 (basepay/ verified the payment with the facilitator): {amount, currency, via, payer}."""
+    import secrets
+    if not INTERNAL_KEY or not secrets.compare_digest(request.headers.get("x-internal-key", ""), INTERNAL_KEY):
+        return None
+    try:
+        amount = int(request.headers.get("x-paid-amount") or 0)
+    except ValueError:
+        amount = 0
+    if amount <= 0:
+        return None
+    return {"amount": amount, "currency": (request.headers.get("x-paid-currency") or "usdc").lower()[:8],
+            "via": (request.headers.get("x-paid-via") or "x402")[:40], "payer": (request.headers.get("x-paid-by") or "")[:80]}
+
+
 def setup(app, db, get_key, pay_gate, client_ip, h):
     with db() as c:
         c.executescript(SCHEMA)
 
-    async def handle(request, b):
+    async def perform(request, b, route):
+        """Runs one check with the price rules. Returns a JSONResponse (402 and friends) or the context dict."""
         auth = request.headers.get("authorization")
         claim = clean(b)
         now = int(time.time())
-        key, settlement = None, None
-        if auth:
+        key, settlement, paid_ext = None, None, internal_payment(request)
+        if paid_ext:
+            payer = "x402:" + (paid_ext["payer"] or "anonymous")
+        elif auth:
             key = get_key(auth)
             payer = "key:" + key["key_hash"]
         elif request.headers.get("x-payment"):
-            gate = await pay_gate(request, b, "/v1/check", CHECK_PRICE_NANO)
+            gate = await pay_gate(request, b, route, CHECK_PRICE_NANO)
             if isinstance(gate, JSONResponse):
                 return gate
             key, settlement = gate
@@ -255,12 +279,12 @@ def setup(app, db, get_key, pay_gate, client_ip, h):
         with db() as c:
             c.executescript(SCHEMA)
             used = c.execute("SELECT count(*) FROM witness_checks WHERE payer=? AND ts>? AND status!='unverifiable'", (payer, now - 86400)).fetchone()[0]
-        if used >= PER_ID_DAY:
+        if used >= PER_ID_DAY and not paid_ext:
             raise HTTPException(429, f"up to {PER_ID_DAY} checks a day per key; volume and commercial use: {BASE}/witness", headers={"Retry-After": "3600"})
-        paid = bool(b.get("pay")) or settlement is not None      # a buyer can ask for a paid check (catalogues, its own books)
+        paid = bool(b.get("pay")) or settlement is not None or bool(paid_ext)   # a buyer can ask for a paid check (catalogues, its own books)
         free_left = 0 if paid else max(0, FREE_PER_DAY - used)
-        if not free_left and key is None:
-            return await pay_gate(request, b, "/v1/check", CHECK_PRICE_NANO)   # over the free threshold without a key: GRAM-402
+        if not free_left and key is None and not paid_ext:
+            return await pay_gate(request, b, route, CHECK_PRICE_NANO)   # over the free threshold without a key: GRAM-402
         cw = W.open_ro()
         try:
             status, facts, changes, flags = run(cw, claim, now)
@@ -271,51 +295,73 @@ def setup(app, db, get_key, pay_gate, client_ip, h):
         finally:
             if cw is not None:
                 cw.close()
-        charge = 0
+        price = None
         with db() as c:
-            if not free_left and status != "unverifiable":
+            if paid_ext:
+                price = {"amount": paid_ext["amount"], "currency": paid_ext["currency"], "via": paid_ext["via"]}
+            elif not free_left and status != "unverifiable":
                 import starter
                 starter.spend(c, key["key_hash"], CHECK_PRICE_NANO, "witness_check")
-                charge = CHECK_PRICE_NANO
-            rec = record(c, claim, status, facts, changes, flags, payer, charge, head, now)
+                price = {"amount": CHECK_PRICE_NANO, "currency": "gram", "unit": "nano", "via": "gram-402" if settlement else "key_balance"}
+            rec = record(c, claim, status, facts, changes, flags, payer, price, head, now)
             left = c.execute("SELECT balance_nano FROM keys WHERE key_hash=?", (key["key_hash"],)).fetchone()[0] if key else None
-        out = {"status": status, "flags": flags, "check": rec, "charged_nano": charge, "free_checks_left_today": max(0, free_left - 1),
-               "lookup": f"{BASE}/v1/check/{rec['check_id']}"}
-        if left is not None:
-            out["balance_left_nano"] = left
-        if settlement:
-            out["payment"] = {"transaction": settlement["tx_hash"], "payer": settlement["payer"], "paid_nano": settlement["paid_nano"],
-                              "api_key": settlement["api_key"], "note": "api_key is shown once; the payment above the price is credit for more checks"}
+        return {"rec": rec, "status": status, "flags": flags, "price": price, "free_left": max(0, free_left - 1) if not paid else 0,
+                "balance_left": left, "settlement": settlement}
+
+    def legacy(ctx):
+        rec, p = ctx["rec"], ctx["price"]
+        out = {"status": ctx["status"], "flags": ctx["flags"], "check": rec, "charged_nano": p["amount"] if p and p.get("currency") == "gram" else 0,
+               "free_checks_left_today": ctx["free_left"], "lookup": f"{BASE}/v1/checks/{rec['check_id']}"}
+        if ctx["balance_left"] is not None:
+            out["balance_left_nano"] = ctx["balance_left"]
+        if ctx["settlement"]:
+            st = ctx["settlement"]
+            out["payment"] = {"transaction": st["tx_hash"], "payer": st["payer"], "paid_nano": st["paid_nano"],
+                              "api_key": st["api_key"], "note": "api_key is shown once; the payment above the price is credit for more checks"}
         return out
 
-    @app.get("/v1/check")
-    async def check_get(request: Request, type: str = "", target: str = "", version: str = "", sha256: str = "", integrity: str = "", shasum: str = "", pay: int = 0):
-        """Witness Check. Without parameters: what it does, the price, the free threshold."""
-        if not type:
-            return {"what": "Witness Check: is this tool, package, endpoint or address clean? A signed answer of facts from the anchored witness record",
-                    "types": {"mcp_tool": "target=io.github.owner/server", "package": "target=npm:<name>|pypi:<name>, version=, sha256=|integrity=|shasum=",
-                              "url": "target=https://<MCP remote>", "ton_address": "target=<address>", "model_endpoint": "planned (Witness Certificate)"},
-                    "statuses": ["witnessed", "changed_recently", "hash_mismatch", "not_witnessed", "sanctions_listed", "not_listed", "unverifiable"],
-                    "free_per_day": FREE_PER_DAY, "price_nano": CHECK_PRICE_NANO,
-                    "price_note": "test price, announced as such; the first checks of each day are free per key, or per address without a key",
-                    "pay": "Bearer key (balance), or GRAM-402: over the free threshold a call without a key answers 402 -> pay -> repeat with X-PAYMENT; "
-                           "pay=1 (or \"pay\": true) asks for a paid check even within the free threshold",
-                    "example": f"{BASE}/v1/check?type=mcp_tool&target=io.github.github/github-mcp-server", "docs": f"{BASE}/witness"}
-        return await handle(request, {"type": type, "target": target, "version": version, "sha256": sha256, "integrity": integrity, "shasum": shasum, "pay": pay})
+    setup.perform, setup.legacy = perform, legacy
 
-    @app.post("/v1/check")
+    @app.get("/v1/check", include_in_schema=False)
+    async def check_get(request: Request, type: str = "", target: str = "", version: str = "", sha256: str = "", integrity: str = "", shasum: str = "", pay: int = 0):
+        """Deprecated alias of /v1/checks (kept 12 months)."""
+        if not type:
+            return about()
+        ctx = await perform(request, {"type": type, "target": target, "version": version, "sha256": sha256, "integrity": integrity, "shasum": shasum, "pay": pay}, "/v1/check")
+        return ctx if isinstance(ctx, JSONResponse) else legacy(ctx)
+
+    @app.post("/v1/check", include_in_schema=False)
     async def check_post(request: Request):
         try:
             b = await request.json()
         except ValueError:
             b = {}
-        return await handle(request, b)
+        ctx = await perform(request, b, "/v1/check")
+        return ctx if isinstance(ctx, JSONResponse) else legacy(ctx)
 
-    @app.get("/v1/check/{cid}")
+    @app.get("/v1/check/{cid}", include_in_schema=False)
     def one(cid: str):
-        with db() as c:
-            c.executescript(SCHEMA)
-            r = c.execute("SELECT body FROM witness_checks WHERE id=?", (cid[:40],)).fetchone()
+        r = get_check(db, cid)
         if not r:
             raise HTTPException(404, "no such check")
-        return json.loads(r["body"])
+        return r
+
+
+def get_check(db, cid):
+    with db() as c:
+        c.executescript(SCHEMA)
+        r = c.execute("SELECT body FROM witness_checks WHERE id=?", (cid[:40],)).fetchone()
+    return json.loads(r["body"]) if r else None
+
+
+def about():
+    return {"object": "check_service", "description": "Checks: is this MCP server, package, endpoint or address clean? A signed answer of facts from the anchored record",
+            "types": {"mcp_server": "target=io.github.owner/server (alias mcp_tool)", "package": "target=npm:<name>|pypi:<name>, version, sha256|integrity|shasum",
+                      "url": "target=https://<MCP remote>", "ton_address": "target=<address>", "model_endpoint": "planned"},
+            "statuses": ["witnessed", "changed_recently", "hash_mismatch", "not_witnessed", "sanctions_listed", "not_listed", "unverifiable"],
+            "free_per_day": FREE_PER_DAY, "price": {"amount": CHECK_PRICE_NANO, "currency": "gram", "unit": "nano"},
+            "price_note": "test price, announced as such; the first checks of each day are free per key, or per address without a key",
+            "pay": "Bearer key (balance), GRAM-402 (402 -> pay -> repeat with X-PAYMENT), or x402 USDC on Base at /base/checks; "
+                   "\"pay\": true asks for a paid check within the free threshold",
+            "create": "POST /v1/checks {\"type\": \"mcp_server\", \"target\": \"io.github.github/github-mcp-server\"}",
+            "docs": f"{BASE}/docs/checks", "successor_note": "this is the public Checks API; /v1/check is its deprecated alias"}

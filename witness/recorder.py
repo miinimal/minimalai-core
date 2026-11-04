@@ -97,6 +97,16 @@ def connect(path=None):
     return c
 
 
+def rec_id(object_id):
+    """Public record id (official names, 04.11): rec_ + 24 hex of sha256 of the internal object id; stable forever."""
+    return "rec_" + hashlib.sha256(object_id.encode()).hexdigest()[:24]
+
+
+def ver_id(leaf):
+    """Public version id: ver_ + the first 24 hex of the observation leaf (content-derived, unique per fact)."""
+    return "ver_" + leaf[:24]
+
+
 def _bump(c, key, n=1):
     c.execute("INSERT INTO w_count(key, n) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET n=n+excluded.n", (key, n))
 
@@ -104,6 +114,12 @@ def _bump(c, key, n=1):
 def _migrate(c):
     """One-time: counters and the change list for a record written before they existed; the leaf index for proofs."""
     c.execute("CREATE INDEX IF NOT EXISTS w_obs_leaf ON w_obs(leaf)")
+    if "rec_id" not in [r[1] for r in c.execute("PRAGMA table_info(w_objects)")]:
+        c.execute("ALTER TABLE w_objects ADD COLUMN rec_id TEXT")
+    if c.execute("SELECT 1 FROM w_objects WHERE rec_id IS NULL LIMIT 1").fetchone():
+        c.executemany("UPDATE w_objects SET rec_id=? WHERE id=?", [(rec_id(r[0]), r[0]) for r in c.execute("SELECT id FROM w_objects WHERE rec_id IS NULL").fetchall()])
+        c.commit()
+    c.execute("CREATE UNIQUE INDEX IF NOT EXISTS w_objects_rec ON w_objects(rec_id)")
     if "live" not in [r[1] for r in c.execute("PRAGMA table_info(w_queue)")]:
         c.execute("ALTER TABLE w_queue ADD COLUMN live INTEGER DEFAULT 0")
     if state(c, "fix_backlog_changes_v1") is None and not c.execute("SELECT 1 FROM w_count LIMIT 1").fetchone():
@@ -197,10 +213,10 @@ def observe(c, obj, kind, version, payload, now, source, meta=None, info=None, n
         c.execute("INSERT INTO w_changes(seq, object, ts, what) VALUES(?,?,?,?)", (cur.lastrowid, obj, now, _what(kind, version, last["version"], payload)))
     if not o:
         _bump(c, "objects:" + obj.split(":", 1)[0])
-        c.execute("INSERT INTO w_objects(id, kind, name, title, description, source, first_seen, last_seen, latest, versions, changes, last_change, status, repo, links) "
-                  "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        c.execute("INSERT INTO w_objects(id, kind, name, title, description, source, first_seen, last_seen, latest, versions, changes, last_change, status, repo, links, rec_id) "
+                  "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                   (obj, obj.split(":", 1)[0], obj.split(":", 1)[1], info.get("title"), info.get("description"), source, now, now, info.get("latest"),
-                   1 if kind in ("manifest", "package") else 0, 0, None, info.get("status"), info.get("repo"), json.dumps(info.get("links") or {})))
+                   1 if kind in ("manifest", "package") else 0, 0, None, info.get("status"), info.get("repo"), json.dumps(info.get("links") or {}), rec_id(obj)))
     else:
         sets, args = ["last_seen=?"], [now]
         for k in ("title", "description", "latest", "status", "repo"):

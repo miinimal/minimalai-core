@@ -30,6 +30,8 @@ MANIFEST = [
     ("gateway/anchors.py", "receipts/anchors.py"),
     ("gateway/witness.py", "witness/recorder.py"),
     ("gateway/witness_check.py", "witness/check.py"),
+    ("gateway/records_api.py", "api/records.py"),
+    ("docs/protocol/CHECKS.md", "spec/CHECKS.md"),
     ("gateway/trust.py", "receipts/trust_index.py"),
     ("gateway/erc8004.py", "passport/erc8004.py"),
     ("gateway/botauth.py", "passport/botauth.py"),
