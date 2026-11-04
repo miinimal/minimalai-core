@@ -217,7 +217,9 @@ def tick(c, now=None, fetch=None, sources=None, model=None):
     out = {"polled": 0, "events": 0, "rated": 0, "errors": 0}
     known = [sid for sid, _, _, _ in (sources or SOURCES)]
     c.execute(f"DELETE FROM nerves_state WHERE source NOT IN ({','.join('?' * len(known))})", known)   # a source that left the list leaves the table
+    c.commit()   # never hold a write transaction across a network wait: one open transaction locked the whole database (rollout 116)
     for sid, kind, target, label in (sources or SOURCES):
+        c.commit()
         st = c.execute("SELECT * FROM nerves_state WHERE source=?", (sid,)).fetchone()
         every = DAILY_S if (st and st["demoted"]) else HOURLY_S
         if st and st["polled"] and now - st["polled"] < every - 60:
@@ -462,10 +464,12 @@ def supersede(c):
 def rate_new(c, now, model=None):
     ask = model or ask_model
     supersede(c)
+    c.commit()
     n = 0
     for ev in c.execute("SELECT * FROM nerves_events WHERE status='new' AND importance IS NULL ORDER BY id").fetchall():
         if budget_left(c, now) <= 0:
             break
+        c.commit()   # the model call can take a minute: no lock held meanwhile
         try:
             r = ask(dict(ev))
         except Exception as e:  # noqa: BLE001
