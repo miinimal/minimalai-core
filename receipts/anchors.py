@@ -53,7 +53,8 @@ def heads(c):
                       ("notary", "SELECT sha256 FROM notary ORDER BY seq DESC LIMIT 1"),
                       ("verdicts", "SELECT sha256 FROM verdicts ORDER BY seq DESC LIMIT 1"),
                       ("disputes", "SELECT sha256 FROM disputes ORDER BY seq DESC LIMIT 1"),
-                      ("ton_anchor", "SELECT tx FROM anchors ORDER BY id DESC LIMIT 1")):
+                      ("ton_anchor", "SELECT tx FROM anchors ORDER BY id DESC LIMIT 1"),
+                      ("witness", "SELECT head FROM witness_heads ORDER BY seq DESC LIMIT 1")):   # W1: the hourly witness head, daily to TON and EAS
         try:
             v = q(sql)
         except Exception:  # noqa: BLE001  a table that does not exist in this build

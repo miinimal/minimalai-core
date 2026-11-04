@@ -117,7 +117,7 @@ def empty(text, href="", action=""):
 LABELS = {"docs": "Docs", "registry": "Agents", "agent": "Agents", "city": "City", "square": "Square", "board": "Work", "grants": "Grants", "districts": "Districts",
           "trust": "Trust", "treasury": "Treasury", "encyclopedia": "Encyclopedia", "roadmap": "Roadmap", "developers": "Developers", "for-agents": "For agents",
           "live": "Live", "nerves": "Nervous system", "backers": "Back the work", "check": "Check", "brand": "Brand", "bounty": "Bounty", "merit": "Merit",
-          "contributions": "Contributions", "panel": "Owner's panel", "integrations": "Integrations", "solutions": "Solutions", "status": "Status", "a": "Agents", "journal": "Journal", "signin": "Sign in"}
+          "contributions": "Contributions", "panel": "Owner's panel", "integrations": "Integrations", "solutions": "Solutions", "status": "Status", "a": "Agents", "journal": "Journal", "signin": "Sign in", "witness": "Witness"}
 
 
 def crumbs(path, title):
