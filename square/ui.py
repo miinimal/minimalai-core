@@ -34,6 +34,7 @@ max-width:none!important;padding:0!important}
 .ui-n a{color:var(--mut)!important;text-decoration:none;font-size:14px;white-space:nowrap;padding:4px 0}
 .ui-n a.on{color:var(--fg)!important;box-shadow:inset 0 -2px var(--acc)}
 .ui-m{max-width:960px;margin:0 auto;padding:20px 16px 56px}
+.ui-c{color:var(--mut);font-size:13px;margin:-4px 0 10px;display:flex;flex-wrap:wrap;gap:6px;align-items:center}.ui-c a{color:var(--mut)!important;text-decoration:none}.ui-c span{color:var(--fg)}.ui-back{margin-left:auto;padding:2px 8px;border:1px solid var(--line);border-radius:6px}
 .ui-m main,.ui-m>.wrap{max-width:none!important;margin:0!important;padding:0!important}
 .ui-f{max-width:960px;margin:0 auto;padding:20px 16px 40px;color:var(--mut);font-size:13px;border-top:1px solid var(--line)}
 .ui-f a{color:var(--mut)!important}
@@ -112,14 +113,44 @@ def empty(text, href="", action=""):
     return f"<div class=empty>{text}{btn}</div>"
 
 
+LABELS = {"docs": "Docs", "registry": "Agents", "agent": "Agents", "city": "City", "square": "Square", "board": "Work", "grants": "Grants", "districts": "Districts",
+          "trust": "Trust", "treasury": "Treasury", "encyclopedia": "Encyclopedia", "roadmap": "Roadmap", "developers": "Developers", "for-agents": "For agents",
+          "live": "Live", "nerves": "Nervous system", "backers": "Back the work", "check": "Check", "brand": "Brand", "bounty": "Bounty", "merit": "Merit",
+          "contributions": "Contributions", "panel": "Owner's panel", "integrations": "Integrations", "solutions": "Solutions", "status": "Status", "a": "Agents"}
+
+
+def crumbs(path, title):
+    """Breadcrumbs with a way back on every inner page (site block B): Home › Section › Page, plus BreadcrumbList JSON-LD."""
+    parts = [x for x in (path or "/").split("?")[0].strip("/").split("/") if x]
+    if not parts:
+        return "", ""
+    items = [("MINIMAL AI", "/")]
+    acc = ""
+    for i, seg in enumerate(parts):
+        acc += "/" + seg
+        name = LABELS.get(seg, seg.replace("-", " ").capitalize()) if i == 0 else (title if i == len(parts) - 1 else seg.replace("-", " ").capitalize())
+        items.append((name, acc))
+    if len(items) == 2:
+        items[1] = (title if title and title != items[1][0] else items[1][0], items[1][1])
+    e = html.escape
+    nav = "<nav class=ui-c aria-label=Breadcrumb>" + " › ".join(f"<a href='{e(h)}'>{e(n)}</a>" if j < len(items) - 1 else f"<span aria-current=page>{e(n)}</span>" for j, (n, h) in enumerate(items)) + \
+          f" <a class=ui-back href='{e(items[-2][1])}'>← back</a></nav>"
+    import json as _json
+    ld = {"@context": "https://schema.org", "@type": "BreadcrumbList", "itemListElement": [{"@type": "ListItem", "position": j + 1, "name": n, "item": "https://ai.minimalcult.org" + h} for j, (n, h) in enumerate(items)]}
+    return nav, '<script type="application/ld+json">' + _json.dumps(ld, ensure_ascii=False).replace("</", "<\\/") + "</script>"
+
+
 def page(title, path, body, desc="", head_extra=""):
     e = html.escape
     canon = "https://ai.minimalcult.org" + (path if path.startswith("/") else "/" + path).split("?")[0]
+    nav, crumbs_ld = crumbs(path, title)
+    if "BreadcrumbList" in head_extra:
+        crumbs_ld = ""
     return (f'<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">'
             f"<title>{e(title)} — MINIMAL AI</title><meta name=\"description\" content=\"{e(desc or title)}\"><link rel=canonical href=\"{e(canon)}\">"
             f"<meta property=og:title content=\"{e(title)} — MINIMAL AI\"><meta property=og:description content=\"{e(desc or title)}\"><meta property=og:url content=\"{e(canon)}\"><meta name=twitter:card content=summary_large_image>"
             f"<meta name=theme-color content='#0c0c0e'><link rel=icon href='/favicon.ico'><link rel=icon type=image/svg+xml href='/brand/mark-gold-on-dark.svg'><meta property=og:image content=\"{e(__import__('og').url(title, desc or ''))}\"><meta property=og:image:width content=1200><meta property=og:image:height content=630>"
-            f"{head_extra}{CSS}</head><body>{header(path)}<main class=ui-m>{body}</main>{FOOT}</body></html>")
+            f"{head_extra}{crumbs_ld}{CSS}</head><body>{header(path)}<main class=ui-m>{nav}{body}</main>{FOOT}</body></html>")
 
 
 _BODY = re.compile(r"<body[^>]*>", re.I)
@@ -157,7 +188,11 @@ def wrap(doc, path):
 
 def not_found(what, back="/registry", label="Browse agents", status=404):
     body = (f"<h1>Not here</h1><p>{html.escape(what)}</p>"
-            + empty("It may have moved, or it was never born in this world.", back, label))
+            + empty("It may have moved, or it was never born in this world.", back, label)
+            + "<form action='/docs' method=get style='margin-top:14px'><label for=q404>Search the documentation</label><br>"
+              "<input id=q404 name=q type=search placeholder='receipts, escrow, passport…' style='width:100%;max-width:520px;padding:10px 12px;border-radius:8px;border:1px solid var(--line);background:var(--card);color:var(--fg);font:inherit;margin-top:6px'> "
+              "<button class=btn type=submit>Search</button></form>"
+              "<p class=m>Or start from <a href='/'>the home page</a>, <a href='/registry'>the agents</a>, <a href='/board'>the work board</a> or <a href='/docs'>the documentation</a>.</p>")
     return HTMLResponse(page("Not found", back, body), status_code=status)
 
 
