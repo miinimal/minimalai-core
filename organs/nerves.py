@@ -88,6 +88,12 @@ SOURCES = [
     ("tg:contest", "tg_channel", "contest", "Telegram contests channel"),
     ("json:devpost", "json_count", "https://devpost.com/api/hackathons?status[]=open&order_by=deadline|hackathons", "Devpost open hackathons"),
     ("gh:gitcoinco/grants-stack", "github_release", "gitcoinco/grants-stack", "Gitcoin grants stack"),
+    # E17 (HQ 04.11): independent MCP tool-definition logs — releases, coverage; a signal only when it moves
+    ("gh:alexar76/histor", "github_release", "alexar76/histor", "HISTOR tool log (competitor)"),
+    ("gh:GautamTalksDev/Plumbline", "github_release", "GautamTalksDev/Plumbline", "Plumbline tool log (competitor)"),
+    ("gh:yassinht/mcp-transparency-log", "github_release", "yassinht/mcp-transparency-log", "mcp-transparency-log (competitor)"),
+    ("html:histor-coverage", "html_match", "https://histor.modelmarket.dev|([0-9][0-9,]* servers)", "HISTOR coverage (competitor)"),
+    ("html:axiorank-tools-log", "html_match", "https://axiorank.com/tools-log|([0-9][0-9,]* servers|No servers observed yet)", "AxioRank tools log coverage (competitor)"),
     ("html:ethglobal", "html_match", "https://ethglobal.com/events|(/events/[a-z0-9-]+)", "ETHGlobal events"),
     # H-2 (docs/site/OPPORTUNITIES.md): pages that say "not yet" — the state word is the value, so the change to "apply" is the event
     ("html:ton-foundation-grants", "html_match", "https://ton.foundation/|Grants Program[\\s\\S]{0,600}?(Coming soon|Apply now|Apply|apply)", "TON Foundation grants (was: coming soon, 2026-11-04)"),
