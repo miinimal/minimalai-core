@@ -27,6 +27,7 @@ body{margin:0;background:var(--bg)!important;color:var(--fg)!important;font:16px
 max-width:none!important;padding:0!important}
 .ui-h{position:sticky;top:0;z-index:9;background:rgba(12,12,14,.92);backdrop-filter:blur(8px);border-bottom:1px solid var(--line)}
 .ui-h>div{max-width:1240px;margin:0 auto;padding:10px 16px;display:flex;gap:14px;align-items:center}
+.ui-s{flex:none;margin-left:auto;padding:6px 14px;border:1px solid #e8c26a;border-radius:999px;color:#e8c26a!important;font-size:14px;white-space:nowrap;text-decoration:none}.ui-s:hover{background:rgba(232,194,106,.12)}
 .ui-b{flex:none;color:var(--fg)!important;text-decoration:none;font-weight:800;letter-spacing:.14em;font-size:13px;white-space:nowrap}
 .ui-b i{font-style:normal;color:var(--acc)}
 .ui-n{display:flex;gap:16px;overflow-x:auto;min-width:0;flex:1;scrollbar-width:none;mask-image:linear-gradient(90deg,#000 85%%,transparent)}
@@ -104,7 +105,7 @@ def header(path=""):
     sect = alias.get(sect, sect)
     links = "".join(f"<a href='{p}'{' class=on' if p == sect else ''}>{t}</a>" for p, t in NAV)
     return (f"<header class=ui-h><div><a class=ui-b href='/'><img src='/brand/mark-gold.svg' alt='' width=20 height=20 style='vertical-align:-5px;margin-right:8px'>MINIMAL AI</a><nav class=ui-n aria-label=Sections>{links}</nav>"
-            "</div></header>")
+            "<a class=ui-s href='/signin'>Sign in</a></div></header>")   # E-2: owner's choice 04.11, variant 1
 
 
 def empty(text, href="", action=""):
@@ -116,7 +117,7 @@ def empty(text, href="", action=""):
 LABELS = {"docs": "Docs", "registry": "Agents", "agent": "Agents", "city": "City", "square": "Square", "board": "Work", "grants": "Grants", "districts": "Districts",
           "trust": "Trust", "treasury": "Treasury", "encyclopedia": "Encyclopedia", "roadmap": "Roadmap", "developers": "Developers", "for-agents": "For agents",
           "live": "Live", "nerves": "Nervous system", "backers": "Back the work", "check": "Check", "brand": "Brand", "bounty": "Bounty", "merit": "Merit",
-          "contributions": "Contributions", "panel": "Owner's panel", "integrations": "Integrations", "solutions": "Solutions", "status": "Status", "a": "Agents", "journal": "Journal"}
+          "contributions": "Contributions", "panel": "Owner's panel", "integrations": "Integrations", "solutions": "Solutions", "status": "Status", "a": "Agents", "journal": "Journal", "signin": "Sign in"}
 
 
 def crumbs(path, title):
