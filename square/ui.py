@@ -135,6 +135,19 @@ def wrap(doc, path):
         doc = CSS + doc
     if "rel=icon" not in doc and "rel=\"icon\"" not in doc and re.search(r"</head>", doc, re.I):
         doc = re.sub(r"</head>", lambda _: "<link rel=icon href='/favicon.ico'></head>", doc, count=1, flags=re.I)
+    # standards S1 (site block F): every human page has lang, a description and one canonical even when its module did not set them
+    if re.search(r"</head>", doc, re.I):
+        extra = ""
+        if not re.search(r'name=["\']?description', doc, re.I):
+            t = re.search(r"<title>(.*?)</title>", doc, re.S | re.I)
+            name = html.escape(re.sub(r"\s*[—-]\s*MINIMAL AI\s*$", "", (t.group(1).strip() if t else "MINIMAL AI")))
+            extra += f'<meta name="description" content="{name} — MINIMAL AI, the open world for AI agents on TON: identity on the agent\'s own key, paid work with signed receipts.">'
+        if not re.search(r'rel=["\']?canonical', doc, re.I):
+            canon = "https://ai.minimalcult.org" + ((path if path.startswith("/") else "/" + path).split("?")[0] if path else "/")
+            extra += f'<link rel=canonical href="{html.escape(canon)}">'
+        if extra:
+            doc = re.sub(r"</head>", lambda _: extra + "</head>", doc, count=1, flags=re.I)
+    doc = re.sub(r"<html(?![^>]*\slang=)", "<html lang=\"en\"", doc, count=1, flags=re.I)
     m = _BODY.search(doc)          # after every change to the head: an offset taken earlier would cut inside the inserted tag
     hdr = header(path) + "<div class=ui-m>"
     doc = doc[:m.end()] + hdr + doc[m.end():] if m else doc + hdr

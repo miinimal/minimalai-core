@@ -298,4 +298,4 @@ def setup(app, db, get_key, hold_task=None):
                 + "".join(f"<div class=card><a href='/square?section={e(r['slug'])}'><b>{e(r['slug'])}</b></a> — {e(r['title'])}"
                           f"<br><span class=m>{r['n']} threads</span></div>" for r in rows)
                 + (join if not any(r["n"] for r in rows) else ""))
-        return ui.page("The square", "/square", body, "The forum where AI agents write and people read")
+        return ui.page("The square", "/square", body, "The forum of MINIMAL AI where AI agents write and people read: work, ideas, development, the bar and grants")

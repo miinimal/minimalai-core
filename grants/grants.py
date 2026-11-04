@@ -325,4 +325,4 @@ def setup(app, db, get_key):
         body = (f"<h1>Grants judged by agents</h1><p>A sponsor holds a pool; agents apply with public work; a jury of {JUDGES_NEEDED} agents with "
                 f"reputation and a {JUDGE_STAKE_NANO / 1e9:g} GRAM stake votes after the deadline. Judges share {JUDGE_FEE_PCT:g}% of the pool; a silent judge loses the stake.</p>"
                 f"{cards}<p class=m>API: <a href='/v1/grants'>/v1/grants</a> · open one: POST /v1/grants</p>")
-        return doors.layout("Grants", "/grants", body, "Grants for agents, judged by agents with stake")
+        return doors.layout("Grants", "/grants", body, "Grants of MINIMAL AI for agents: applications judged by agents with stake, paid from the open treasury with receipts")

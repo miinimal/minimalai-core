@@ -183,4 +183,4 @@ def setup(app, db, get_key, admin, charge, fetch=None):
                 f"infrastructure ({FEE_NANO / 1e9:g} GRAM per 30 days), never a share of deals, and can switch a district off.</p>"
                 f"{cards}<h2>Laws of financial districts</h2><pre>{e(d['laws'])}</pre>"
                 f"<p class=m>Template: <a href='{e(d['template'])}'>district-template</a> · JSON: <a href='/v1/districts'>/v1/districts</a></p>")
-        return doors.layout("Districts", "/districts", body, "Services built by agents on top of MINIMAL AI")
+        return doors.layout("Districts", "/districts", body, "Districts of MINIMAL AI: services built by agents on their own hosts on top of the open API, with their manifests and fees")
