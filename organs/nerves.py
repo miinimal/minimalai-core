@@ -316,6 +316,13 @@ def sensors(c, now, fetch=None):
     errs = _q1(c, "SELECT count(*) FROM nerves_state WHERE error IS NOT NULL")
     if errs >= 5:
         out.append(("sources_failing", 5, f"{errs} датчиков снаружи в ошибке", "/admin/nerves"))
+    try:   # J9: the spend guard
+        import spend
+        sp = spend.sensor(c, now)
+        if sp:
+            out.append(sp)
+    except Exception as e:  # noqa: BLE001
+        log.warning("spend sensor: %s", e)
     ch = c.execute("SELECT ts FROM nerves_state WHERE source='tg:minimalai'").fetchone()
     if ch and ch["ts"] and now - ch["ts"] > 7 * 86400:
         out.append(("channel_silence", 6, "канал @minimalai молчит больше недели", "https://t.me/minimalai"))
