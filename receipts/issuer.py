@@ -18,11 +18,51 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey,
 
 KEY_PATH = os.environ.get("RECEIPT_KEY_PATH", os.path.join(os.path.dirname(os.environ.get("MINIMALAI_DB", "./x.db")),
                                                             "receipt_ed25519.key"))
+# O-2: in production the key lives only in the isolated signer process (signer.py, no network, key mounted read-only);
+# every service reaches it through this unix socket and never sees the key bytes. Unset = local key file (tests, dev).
+SIGNER_SOCKET = os.environ.get("SIGNER_SOCKET", "")
 _key = None
+_pub = None
+
+
+class SignerUnavailable(RuntimeError):
+    """The isolated signer did not answer: the caller must fail the request, never fall back to a new key."""
+
+
+def _signer_call(req, timeout=5.0, attempts=3):
+    import socket
+    data = (json.dumps(req) + "\n").encode()
+    last = None
+    for i in range(attempts):
+        try:
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as so:
+                so.settimeout(timeout)
+                so.connect(SIGNER_SOCKET)
+                so.sendall(data)
+                buf = b""
+                while not buf.endswith(b"\n"):
+                    chunk = so.recv(65536)
+                    if not chunk:
+                        break
+                    buf += chunk
+            resp = json.loads(buf or b"{}")
+            if "error" in resp:
+                raise SignerUnavailable("signer refused: " + str(resp["error"])[:120])
+            return resp
+        except SignerUnavailable:
+            raise
+        except (OSError, ValueError) as e:
+            last = e
+            time.sleep(0.2 * (i + 1))
+    raise SignerUnavailable(f"signer socket {SIGNER_SOCKET} not answering: {type(last).__name__}")
 
 
 def key():
+    """The local private key (tests and development only). With SIGNER_SOCKET set this refuses: nothing in production
+    may load or mint the key outside the signer."""
     global _key
+    if SIGNER_SOCKET:
+        raise RuntimeError("receipt key is held by the isolated signer (SIGNER_SOCKET); use raw_sign()")
     if _key is None:
         if os.path.exists(KEY_PATH):
             _key = Ed25519PrivateKey.from_private_bytes(open(KEY_PATH, "rb").read())
@@ -36,8 +76,26 @@ def key():
     return _key
 
 
+def raw_sign(message):
+    """Ed25519 signature of `message` (bytes) by the gateway key, wherever the key lives."""
+    if SIGNER_SOCKET:
+        return base64.b64decode(_signer_call({"op": "sign", "msg": base64.b64encode(bytes(message)).decode()})["sig"])
+    return key().sign(bytes(message))
+
+
+def signing_available():
+    """True when a signature can be made without minting a key (a socket is configured, or the key file exists)."""
+    return bool(SIGNER_SOCKET) or os.path.exists(KEY_PATH)
+
+
 def public_key_hex():
-    return key().public_key().public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw).hex()
+    global _pub
+    if _pub is None:
+        if SIGNER_SOCKET:
+            _pub = _signer_call({"op": "pub"})["pub"]
+        else:
+            return key().public_key().public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw).hex()
+    return _pub
 
 
 def canon(obj):
@@ -84,7 +142,7 @@ def make(request_body, response_body, route, attestation, payment=None):
                             observed=["request hash", "response hash", "route and model", "time of issue"] + (["payment transaction on chain"] if payment else []),
                             assumed=["the client received these bytes (confirm with POST /v1/receipts/{receipt_id}/ack)", "the answer is correct"],
                             ack="POST /v1/receipts/{receipt_id}/ack"))
-    sig = key().sign(canon(payload))
+    sig = raw_sign(canon(payload))
     return {**payload, "sig": base64.b64encode(sig).decode()}
 
 
@@ -114,7 +172,7 @@ def sign(payload):
     """Sign any record payload with the gateway key (adds gateway_key and the check link, returns record with 'sig')."""
     payload = {**payload, "gateway_key": public_key_hex()}
     payload.setdefault("check", CHECK_URL)
-    return {**payload, "sig": base64.b64encode(key().sign(canon(payload))).decode()}
+    return {**payload, "sig": base64.b64encode(raw_sign(canon(payload))).decode()}
 
 
 def verify(receipt, request_body=None, response_body=None):
@@ -161,5 +219,5 @@ def make_task(row, decision, prev_sha256, extra=None):
                             if status != "failed" else ["the submission hash was recorded", f"the decision '{decision}' was recorded"],
                             assumed=["the submission text matches its hash (only the hash is signed)", "the worker is the holder of its key"]
                             + (["the poster saw the work: it was closed by a rule, not by the poster's word"] if status == "maybe_sent" else [])))
-    sig = key().sign(canon(payload))
+    sig = raw_sign(canon(payload))
     return {**payload, "sig": base64.b64encode(sig).decode()}
