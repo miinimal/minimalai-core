@@ -25,7 +25,7 @@ curl -s https://ai.minimalcult.org/v1/checks -H 'content-type: application/json'
 ```
 
 The answer is a `check` object: `id`, `created` (RFC 3339), `type`, `target`, `status`, `flags`, `facts`, `changes`,
-`record_head`, `price` (`{"amount": 5000000, "currency": "gram", "unit": "nano"}` or `{"amount": 5000, "currency": "usdc"}`),
+`record_head`, `price` (`{"amount": 5000000, "currency": "gram", "unit": "nano"}` or `{"amount": 10000, "currency": "usdc"}`),
 `signed_record`. Errors: `{"error": {"type", "code", "message", "next_step", "doc_url"}}`. The older `/v1/check` answers the
 same with `Deprecation` and `Link` headers (kept at least 12 months).
 
@@ -57,7 +57,7 @@ changes, `record_head` (the witness batch head at the time of the check), the pr
 
 The first 100 checks a day per key (or per address without a key) are free. Above that: a test price from the key balance,
 or GRAM-402 without a key (402 invoice → pay → repeat with `X-PAYMENT`; the payment above the price stays as credit).
-`"pay": true` asks for a paid check within the free threshold. x402 USDC on Base: `/base/checks`, $0.005 per check.
+`"pay": true` asks for a paid check within the free threshold. x402 USDC on Base: `/base/checks`, $0.01 per check.
 
 ## Verify a check without us
 
