@@ -352,6 +352,11 @@ def sensors(c, now, fetch=None):
         pass   # the open core has no private journal copy
     except Exception as e:  # noqa: BLE001
         log.warning("ip sensor: %s", e)
+    try:   # CAP-1: the witness record — disk or memory at 70%, a missed seal hour, a failed anchor (importance 8 wakes the owner)
+        import witness
+        out += witness.sensors(now)
+    except Exception as e:  # noqa: BLE001
+        log.warning("witness sensor: %s", e)
     ch = c.execute("SELECT ts FROM nerves_state WHERE source='tg:minimalai'").fetchone()
     if ch and ch["ts"] and now - ch["ts"] > 7 * 86400:
         out.append(("channel_silence", 6, "канал @minimalai молчит больше недели", "https://t.me/minimalai"))

@@ -73,6 +73,7 @@ CREATE TABLE IF NOT EXISTS w_probe(endpoint TEXT PRIMARY KEY, object TEXT, versi
 CREATE TABLE IF NOT EXISTS w_state(key TEXT PRIMARY KEY, value TEXT);
 CREATE TABLE IF NOT EXISTS w_count(key TEXT PRIMARY KEY, n INTEGER);
 CREATE TABLE IF NOT EXISTS w_changes(seq INTEGER PRIMARY KEY, object TEXT, ts INTEGER, what TEXT);
+CREATE TABLE IF NOT EXISTS w_capacity(ts INTEGER PRIMARY KEY, sample TEXT);
 """
 # counters and the change list are kept as facts are written: the public pages never scan the observation table
 CHANGE_KINDS = ("manifest", "package", "tools", "status")
@@ -575,6 +576,110 @@ def publish_head(batch, main_db=None):
         m.close()
 
 
+# ---------------------------------------------------------------- CAP-1: capacity, measured every hour (read only)
+DATA_DIR = os.environ.get("WITNESS_DATA_DIR", os.path.dirname(os.path.abspath(WITNESS_DB)) or ".")
+
+
+def _size(path):
+    return sum(os.path.getsize(path + ext) for ext in ("", "-wal", "-shm") if os.path.exists(path + ext))
+
+
+def _meminfo():
+    out = {}
+    try:
+        for line in open("/proc/meminfo"):
+            k, v = line.split(":", 1)
+            out[k] = int(v.split()[0]) * 1024
+    except (OSError, ValueError):
+        pass
+    return out
+
+
+def _cgroup_mem():
+    for p in ("/sys/fs/cgroup/memory.current", "/sys/fs/cgroup/memory/memory.usage_in_bytes"):
+        try:
+            return int(open(p).read().strip())
+        except (OSError, ValueError):
+            continue
+    return None
+
+
+def capacity_sample(c, now, cycle_s=None):
+    """One hourly reading: sizes and growth inputs, host disk and memory, load, this service's memory, cycle time, coverage."""
+    db_path = c.execute("PRAGMA database_list").fetchone()[2] or WITNESS_DB
+    data_dir = os.environ.get("WITNESS_DATA_DIR") or os.path.dirname(os.path.abspath(db_path))
+    st = os.statvfs(data_dir)
+    mem = _meminfo()
+    data_bytes = 0
+    for f in os.listdir(data_dir):
+        fp = os.path.join(data_dir, f)
+        if os.path.isfile(fp):
+            data_bytes += os.path.getsize(fp)
+    backup = {}
+    try:
+        backup = json.load(open(os.path.join(data_dir, "backup_last.json")))
+    except (OSError, ValueError):
+        pass
+    try:
+        load1 = float(open("/proc/loadavg").read().split()[0])
+    except (OSError, ValueError, IndexError):
+        load1 = None
+    n = {r["key"]: r["n"] for r in c.execute("SELECT key, n FROM w_count").fetchall()}
+    smp = {"ts": now, "cycle_s": cycle_s, "witness_db_bytes": _size(db_path), "data_dir_bytes": data_bytes,
+           "backup_archive_bytes": backup.get("bytes"), "backups_kept": backup.get("kept"),
+           "disk_total": st.f_blocks * st.f_frsize, "disk_free": st.f_bavail * st.f_frsize,
+           "mem_total": mem.get("MemTotal"), "mem_available": mem.get("MemAvailable"), "swap_free": mem.get("SwapFree"),
+           "load1": load1, "cpus": os.cpu_count(), "service_mem": _cgroup_mem(),
+           "objects": {k.split(":", 1)[1]: v for k, v in n.items() if k.startswith("objects:")},
+           "observations": {k.split(":", 1)[1]: v for k, v in n.items() if k.startswith("obs:")},
+           "queue_packages": c.execute("SELECT count(*) FROM w_queue WHERE tries < 3").fetchone()[0],
+           "probes_due": c.execute("SELECT count(*) FROM w_probe WHERE next_at <= ?", (now,)).fetchone()[0],
+           "probe_endpoints": c.execute("SELECT count(*) FROM w_probe").fetchone()[0]}
+    c.execute("INSERT OR REPLACE INTO w_capacity(ts, sample) VALUES(?,?)", (now, json.dumps(smp)))
+    c.commit()
+    return smp
+
+
+def capacity_forecast(c, scale=(1, 5)):
+    """Growth per day from the samples (first vs last, at least 6 h apart) -> days of headroom per resource, at the current
+    coverage and at x5. Disk counts the record, the rest of /data and the backup archives (kept copies of the record)."""
+    rows = [json.loads(r["sample"]) for r in c.execute("SELECT sample FROM w_capacity ORDER BY ts").fetchall()]
+    if len(rows) < 2 or rows[-1]["ts"] - rows[0]["ts"] < 6 * 3600:
+        return {"status": "collecting", "samples": len(rows), "hours": round((rows[-1]["ts"] - rows[0]["ts"]) / 3600, 1) if rows else 0}
+    a, b = rows[0], rows[-1]
+    days = (b["ts"] - a["ts"]) / 86400
+    db_day = max(0, (b["witness_db_bytes"] - a["witness_db_bytes"]) / days)
+    data_day = max(0, (b["data_dir_bytes"] - a["data_dir_bytes"]) / days)
+    kept = b.get("backups_kept") or 0
+    archive_ratio = (b["backup_archive_bytes"] / b["data_dir_bytes"]) if b.get("backup_archive_bytes") and b["data_dir_bytes"] else 0.5
+    disk_day = data_day * (1 + archive_ratio * kept)            # every kept archive grows with the data it copies
+    used = b["disk_total"] - b["disk_free"]
+    out = {"status": "forecast", "samples": len(rows), "hours": round(days * 24, 1), "witness_db_gb": round(b["witness_db_bytes"] / 1e9, 2),
+           "witness_db_growth_mb_day": round(db_day / 1e6, 1), "disk_growth_mb_day": round(disk_day / 1e6, 1),
+           "disk_used_pct": round(100 * used / b["disk_total"], 1),
+           "mem_used_pct": round(100 * (1 - (b["mem_available"] or 0) / b["mem_total"]), 1) if b.get("mem_total") else None,
+           "cycle_max_s": max((r.get("cycle_s") or 0) for r in rows), "by_scale": {}}
+    for k in scale:
+        g = disk_day * k
+        to70 = (0.7 * b["disk_total"] - used) / g if g else None
+        out["by_scale"][f"x{k}"] = {"disk_growth_mb_day": round(g / 1e6, 1),
+                                    "days_to_disk_70pct": None if to70 is None else max(0, round(to70)),
+                                    "disk_at_30_90_365_days_pct": [round(100 * (used + g * d) / b["disk_total"], 1) for d in (30, 90, 365)],
+                                    "cycle_s_estimate": round(out["cycle_max_s"] * k)}
+    first = []
+    x5 = out["by_scale"].get("x5") or {}
+    if x5.get("cycle_s_estimate", 0) > 3000:
+        first.append("hourly cycle time at x5 coverage (crawl would no longer fit the hour)")
+    if x5.get("days_to_disk_70pct") is not None and x5["days_to_disk_70pct"] < 365:
+        first.append(f"disk at x5 coverage in {x5['days_to_disk_70pct']} days")
+    if out["mem_used_pct"] and out["mem_used_pct"] > 60:
+        first.append("host memory (2 GB shared by all services)")
+    out["first_limit"] = first or ["none within a year at x5"]
+    d1 = out["by_scale"]["x1"]["days_to_disk_70pct"]
+    out["move_needed"] = d1 is not None and d1 < 30          # CAP-2 trigger: less than 30 days of headroom
+    return out
+
+
 def run_once(c, now=None, budget=None, get=None, post=None, adapters=None, upgrade=None, sign=None, main_db=None):
     """One hourly run: read the sources within the time budget, record the run itself, seal, anchor, publish the head."""
     now = now or int(time.time())
@@ -589,6 +694,10 @@ def run_once(c, now=None, budget=None, get=None, post=None, adapters=None, upgra
             summary[name] = {"error": f"{type(e).__name__}: {str(e)[:200]}"}
             c.commit()
     summary["finished_at"] = iso(int(time.time()))
+    try:
+        capacity_sample(c, now, cycle_s=round(time.time() - (deadline - (RUN_BUDGET_S if budget is None else budget)), 1))
+    except Exception as e:  # noqa: BLE001  a measurement never stops the record
+        summary["capacity"] = f"failed: {e}"
     if STOP["now"]:
         summary["stopped_early"] = True
     observe(c, "witness:crawler", "run", summary["started_at"], summary, now, "minimalcult.org/witness")
@@ -649,6 +758,44 @@ def main():
         while not STOP["now"] and time.time() - start < 3600:
             time.sleep(2)
     log.info("witness: stopped after sealing")
+
+
+def sensors(now, path=None, data_dir=None):
+    """CAP-1 alarms for nerves.sensors (importance 8 wakes the owner): disk or memory at 70%, an hour without a seal,
+    an anchor that failed on a sealed batch. Reads the record without writing."""
+    out = []
+    try:
+        st = os.statvfs(data_dir or DATA_DIR)
+        used = 1 - st.f_bavail / st.f_blocks
+        if used >= 0.70:
+            out.append(("witness_disk", 8, f"диск сервера занят на {used:.0%} — запись свидетеля упрётся; план переезда CAP-2 в docs/ops/CAPACITY.md", "/witness"))
+    except OSError:
+        pass
+    mem = _meminfo()
+    if mem.get("MemTotal") and mem.get("MemAvailable") is not None:
+        mu = 1 - mem["MemAvailable"] / mem["MemTotal"]
+        if mu >= 0.70:
+            out.append(("witness_memory", 8, f"память сервера занята на {mu:.0%}", "/status"))
+    c = open_ro(path)
+    if c is None:
+        return out
+    try:
+        if not c.execute("SELECT 1 FROM sqlite_master WHERE name='w_batches'").fetchone():
+            return out
+        last = c.execute("SELECT id, ts FROM w_batches ORDER BY seq DESC LIMIT 1").fetchone()
+        first_obs = c.execute("SELECT value FROM w_state WHERE key='first_observed'").fetchone()
+        started = int(first_obs[0]) if first_obs and first_obs[0] else None
+        if (last and now - last["ts"] > 75 * 60) or (not last and started and now - started > 75 * 60):
+            ago = int((now - (last["ts"] if last else started)) / 60)
+            out.append(("witness_seal_missed", 8, f"свидетель не запечатал час: последняя печать {ago} мин назад", "/witness"))
+        for b in c.execute("SELECT id, ts FROM w_batches WHERE ts < ? ORDER BY seq DESC LIMIT 3", (now - 600,)).fetchall():
+            bad = [r[0] for r in c.execute("SELECT kind FROM w_proofs WHERE batch_id=? AND status='failed'", (b["id"],)).fetchall()]
+            if bad:
+                out.append(("witness_anchor_failed", 8, f"якорь не лёг для пачки {b['id']}: {', '.join(bad)} (повтор идёт каждый час)", "/v1/witness/batches"))
+                break
+    finally:
+        c.close()
+    return out
 
 
 # ---------------------------------------------------------------- reading (gateway: API and pages)
