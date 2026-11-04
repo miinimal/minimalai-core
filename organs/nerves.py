@@ -89,6 +89,9 @@ SOURCES = [
     ("json:devpost", "json_count", "https://devpost.com/api/hackathons?status[]=open&order_by=deadline|hackathons", "Devpost open hackathons"),
     ("gh:gitcoinco/grants-stack", "github_release", "gitcoinco/grants-stack", "Gitcoin grants stack"),
     ("html:ethglobal", "html_match", "https://ethglobal.com/events|(/events/[a-z0-9-]+)", "ETHGlobal events"),
+    # H-2 (docs/site/OPPORTUNITIES.md): pages that say "not yet" — the state word is the value, so the change to "apply" is the event
+    ("html:ton-foundation-grants", "html_match", "https://ton.foundation/|Grants Program[\\s\\S]{0,600}?(Coming soon|Apply now|Apply|apply)", "TON Foundation grants (was: coming soon, 2026-11-04)"),
+    ("html:do-startups", "html_match", "https://www.digitalocean.com/startups|(temporarily paused|Apply now|Apply)", "DigitalOcean Startups credits (was: paused until early 2027)"),
     # block J: robots x MINIMAL AI (weekly research docs/research/ROBOTS.md reads these)
     ("gh:openmind/om1", "github_release", "openmind/om1", "robots: OpenMind OM1 (robots paying via x402)"),
     ("html:peaq-blog", "html_match", "https://www.peaq.xyz/blog|href=\"(/blog/[a-z0-9-]+)\"", "robots: peaq machine economy blog"),
