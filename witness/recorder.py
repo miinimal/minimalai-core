@@ -766,6 +766,25 @@ def _finish(c, now, summary, sign=None, adapters=None, upgrade=None, main_db=Non
     return summary
 
 
+def dispatch_loop(every=60):
+    """MON: delivery runs beside the crawl, once a minute — events for a sealed hour go out within a minute of the seal,
+    and retries keep their schedule even while a long crawl runs or after a restart."""
+    import monitors
+    while not STOP["now"]:
+        try:
+            c = connect()
+            d = monitors.dispatch(MAIN_DB, c)
+            c.close()
+            if d["events"] or d["delivered"] or d["failed"]:
+                log.info("monitors: %s", d)
+        except Exception as e:  # noqa: BLE001
+            log.warning("monitors: %s", e)
+        for _ in range(every // 2):
+            if STOP["now"]:
+                break
+            time.sleep(2)
+
+
 def main():
     import signal
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
@@ -774,6 +793,8 @@ def main():
         os.nice(int(os.environ.get("WITNESS_NICE", "10")))   # CAP-1: one shared vCPU; the site, bots and signer come first
     except OSError:
         pass
+    import threading
+    threading.Thread(target=dispatch_loop, name="monitors", daemon=True).start()
     try:
         c = connect()
         r = recover(c)
@@ -791,19 +812,7 @@ def main():
             log.info("witness run: %s", json.dumps(s, default=str)[:1500])
         except Exception as e:  # noqa: BLE001
             log.exception("witness run failed: %s", e)
-        last_dispatch = 0
         while not STOP["now"] and time.time() - start < 3600:
-            if time.time() - last_dispatch >= 60:          # MON: events right after the cycle, then retries every minute
-                last_dispatch = time.time()
-                try:
-                    import monitors
-                    c = connect()
-                    d = monitors.dispatch(MAIN_DB, c)
-                    c.close()
-                    if d["events"] or d["delivered"] or d["failed"]:
-                        log.info("monitors: %s", d)
-                except Exception as e:  # noqa: BLE001
-                    log.warning("monitors: %s", e)
             time.sleep(2)
     log.info("witness: stopped after sealing")
 
