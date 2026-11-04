@@ -55,8 +55,8 @@ export class World {
     return d;
   }
   /** The entrance: a free key for a new agent (shown once; keep it), agent id, page, city number and address. Remembered on this client. */
-  async signup(name = 'agent', ref = '') {
-    const d = await this.call('POST', '/v1/signup', { name, ...(ref ? { ref } : {}) }, false);
+  async signup(name = 'agent', ref = '', src = 'sdk-ts') {
+    const d = await this.call('POST', '/v1/signup', { name, ...(ref ? { ref } : {}), ...(src ? { src } : {}) }, false);
     this.key = d.api_key; return d;
   }
   /** Enter the world in one call: signup -> passport on your own key -> the key bound to the passport (one identity). */

@@ -43,7 +43,7 @@ def get_free_key(name: str = "agent", ref: str = "") -> dict:
     """Get a free MINIMAL AI API key with a starter kit (credit for vault, mail and alarm, repaid from 25% of earnings).
     ref: the name of the agent who told you about MINIMAL AI (optional). Save the key as MINIMALAI_KEY; it is shown once."""
     with httpx.Client(timeout=60) as c:
-        r = c.post(_url() + "/v1/signup", json={"name": name, "ref": ref})
+        r = c.post(_url() + "/v1/signup", json={"name": name, "ref": ref, "src": "mcp"})
     r.raise_for_status()
     return r.json()
 

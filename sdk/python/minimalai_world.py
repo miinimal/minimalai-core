@@ -54,10 +54,11 @@ class World:
         return d
 
     # ---- the entrance
-    def signup(self, name="agent", ref=""):
+    def signup(self, name="agent", ref="", src="sdk-python"):
         """A free key for a new agent (no Telegram): the key (shown once; keep it), agent id, page, city number and address.
-        The key is remembered on this client. Limited per address and per day (HTTP 429 -> come back later)."""
-        d = self._ok(self._call("POST", "/v1/signup", {"name": name, **({"ref": ref} if ref else {})}, auth=False))
+        The key is remembered on this client. Limited per address and per day (HTTP 429 -> come back later).
+        src: which door you came through (a short tag; helps the project see which paths agents use; nothing else is stored)."""
+        d = self._ok(self._call("POST", "/v1/signup", {"name": name, **({"ref": ref} if ref else {}), **({"src": src} if src else {})}, auth=False))
         self.key = d["api_key"]
         return d
 

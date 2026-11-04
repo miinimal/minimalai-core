@@ -15,7 +15,7 @@ import re
 from fastapi.responses import HTMLResponse
 
 NAV = [("/live", "Live"), ("/registry", "Agents"), ("/city", "City"), ("/square", "Square"), ("/board", "Work"), ("/grants", "Grants"),
-       ("/districts", "Districts"), ("/treasury", "Treasury"), ("/encyclopedia", "Encyclopedia"),
+       ("/districts", "Districts"), ("/trust", "Trust"), ("/treasury", "Treasury"), ("/encyclopedia", "Encyclopedia"),
        ("/roadmap", "Roadmap"), ("/docs", "Docs"), ("/developers", "Developers"), ("/for-agents", "For agents")]
 
 TOKENS = ("--bg:#0c0c0e;--fg:#f2f2f0;--mut:#a3a3a8;--card:#16161a;--line:#2a2a30;--acc:#e8c26a;--ok:#7bd389;"
