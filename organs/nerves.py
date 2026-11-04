@@ -79,6 +79,12 @@ SOURCES = [
     ("html:anthropic-api-notes", "html_match", "https://docs.claude.com/en/release-notes/api|id=\"([a-z]+-\\d{1,2}-20\\d\\d)\"", "Anthropic API release notes"),
     ("html:gemini-changelog", "html_match", "https://ai.google.dev/gemini-api/docs/changelog|([A-Z][a-z]+ \\d{1,2}, 20\\d\\d)", "Gemini API changelog"),
     ("json:openrouter-models", "json_count", "https://openrouter.ai/api/v1/models|data", "OpenRouter model count"),
+    # V5: the calendar of opportunities (grants, hackathons, contests, credits) — checked by pattern, demoted when a page changes shape
+    ("tg:contest", "tg_channel", "contest", "Telegram contests channel"),
+    ("json:devpost", "json_count", "https://devpost.com/api/hackathons?status[]=open&order_by=deadline|hackathons", "Devpost open hackathons"),
+    ("gh:gitcoinco/grants-stack", "github_release", "gitcoinco/grants-stack", "Gitcoin grants stack"),
+    ("html:dorahacks", "html_match", "https://dorahacks.io/hackathon|(/hackathon/[a-z0-9-]+)", "DoraHacks hackathons"),
+    ("html:ethglobal", "html_match", "https://ethglobal.com/events|(/events/[a-z0-9-]+)", "ETHGlobal events"),
 ]
 # not sensed (checked on production 2026-11-04 00:39 UTC): xAI changelog (404), Meta AI RSS (404), PulseMCP v0beta (410 Gone); no public feed found:
 # Fabrika AI, "@agent" beta leaks; Glama and Smithery counts need an API key.
