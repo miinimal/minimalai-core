@@ -484,6 +484,7 @@ def owner_lines(c, now=None, since_s=86400, min_importance=7):
 
 
 def queue(c, limit=50):
+    c.executescript(SCHEMA)                         # a fresh database (panel before the first tick) has no tables yet
     rows = c.execute("SELECT * FROM nerves_events WHERE status IN ('queued','decided') ORDER BY importance DESC, id DESC LIMIT ?", (limit,)).fetchall()
     return [dict(r) for r in rows]
 
