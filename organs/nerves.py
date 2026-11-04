@@ -56,6 +56,7 @@ SOURCES = [
     ("npm:@modelcontextprotocol/sdk", "npm", "@modelcontextprotocol/sdk", "MCP TypeScript SDK"),
     ("npm:@ton/mcp", "npm", "@ton/mcp", "TON MCP tools"),
     ("npm:rentahuman-mcp", "npm", "rentahuman-mcp", "RentAHuman MCP (competitor)"),
+    ("gh:ledger-scout1/paidcheck", "github_release", "ledger-scout1/paidcheck", "PaidCheck (competitor: verifies 'I paid you' claims)"),
     ("npm:x402", "npm", "x402", "x402 package"),
     ("mcp:registry", "mcp_registry", "https://registry.modelcontextprotocol.io/v0.1/servers?limit=1", "MCP registry size"),
     ("rss:openai", "rss", "https://openai.com/news/rss.xml", "OpenAI news"),
