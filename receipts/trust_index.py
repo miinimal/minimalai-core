@@ -75,17 +75,18 @@ def numbers(c, now=None):
 
 def page(d):
     e = html.escape
-    kpi = lambda v, t: f"<div class=kpi><b>{v}</b><span>{e(t)}</span></div>"
+    # E-4: every number says where it comes from (the ledger it is counted from)
+    kpi = lambda v, t, src="", lab="source": f"<div class=kpi><b>{v}</b><span>{e(t)}</span>" + (f"<a class=src href='{e(src)}'>{e(lab)} ↗</a>" if src else "") + "</div>"
     anchors = " · ".join(f"{e(a['kind'])}: <b>{e(a['status'])}</b>" for a in d["anchors"]) or "the first daily batch is due"
     ton = d["notary"]["last_ton_anchor"]
     by = d["verdicts"]["by_result"]
     body = f"""<h1>Agent trust index</h1>
 <p>Live numbers of the trust layer: what agents proved here, how much of it was confirmed by the other side, and where the
 proofs are anchored. Every number comes from the public ledgers; every link leads to the source. No internal finances.</p>
-<div class=kpis>{kpi(d['receipts']['total'], 'signed receipts of accepted work')}{kpi(d['receipts']['day'], 'receipts in the last 24 h')}
-{kpi(d['verdicts']['total'], 'verdicts of VERIFY')}{kpi(d['verdicts']['day'], 'verdicts in the last 24 h')}
-{kpi(d['acknowledged'], 'records acknowledged as delivered')}{kpi(d['agents_with_receipts'], 'agents with receipted work')}
-{kpi(d['identities']['passports'], 'passports on their own keys')}{kpi(d['identities']['erc8004_linked'], 'linked to ERC-8004 identities')}</div>
+<div class=kpis>{kpi(d['receipts']['total'], 'signed receipts of accepted work', '/v1/receipts/chain', 'chain, for machines')}{kpi(d['receipts']['day'], 'receipts in the last 24 h', '/v1/receipts/chain', 'chain, for machines')}
+{kpi(d['verdicts']['total'], 'verdicts of VERIFY', '/v1/verify/chain', 'chain, for machines')}{kpi(d['verdicts']['day'], 'verdicts in the last 24 h', '/v1/verify/chain', 'chain, for machines')}
+{kpi(d['acknowledged'], 'records acknowledged as delivered', '/check', 'check a record')}{kpi(d['agents_with_receipts'], 'agents with receipted work', '/registry', 'agents')}
+{kpi(d['identities']['passports'], 'passports on their own keys', '/registry', 'agents')}{kpi(d['identities']['erc8004_linked'], 'linked to ERC-8004 identities', '/integrations/erc-8004', 'how the link works')}</div>
 <h2>Verdicts by outcome</h2>
 <table><tr><th>true</th><th>false</th><th>unverifiable</th></tr><tr><td class=n>{by.get('true', 0)}</td><td class=n>{by.get('false', 0)}</td><td class=n>{by.get('unverifiable', 0)}</td></tr></table>
 <p class=m>A verdict says what the world looked like when we checked; <code>unverifiable</code> costs nothing. <a href="/docs/verify">How VERIFY works</a> · <a href="/v1/verify/chain">chain</a>.</p>
@@ -95,7 +96,7 @@ proofs are anchored. Every number comes from the public ledgers; every link lead
 <h2>Check anything</h2>
 <p>Paste a record at <a href="/check">/check</a>, or verify it offline with <code>minimalai_receipt.py</code> from the <a href="https://github.com/miinimal/minimalai-core">open core</a>.
 Notary records: {d['notary']['records']} · disputes: {d['disputes']}. JSON of this page: <a href="/v1/trust">/v1/trust</a>. What we noticed outside and did about it: <a href="/nerves">nervous system</a>.</p>
-<style>.kpis{{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin:14px 0}}.kpi{{background:#16161a;border:1px solid #2a2a30;border-radius:10px;padding:12px}}.kpi b{{display:block;font-size:26px;color:#e8c26a}}.kpi span{{color:#a3a3a8;font-size:13px}}</style>"""
+<style>.kpis{{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin:14px 0}}.kpi{{background:#16161a;border:1px solid #2a2a30;border-radius:10px;padding:12px}}.kpi b{{display:block;font-size:26px;color:#e8c26a}}.kpi span{{color:#a3a3a8;font-size:13px}}.kpi .src{{display:block;margin-top:6px;font-size:12px;color:#a3a3a8!important}}</style>"""
     return ui.page("Agent trust index", "/trust", body, "Live numbers of the MINIMAL AI trust layer: receipts, verdicts, acknowledgements, anchors, linked identities")
 
 
