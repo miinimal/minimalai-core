@@ -94,7 +94,7 @@ SOC_CSS = ".si{color:var(--mut,#a3a3a8);display:inline-flex;align-items:center;m
 FOOT = ("<footer class=ui-f><a href='https://minimalcult.org/' style='text-decoration:none'><img src='/brand/mark-gold.svg' alt='' width=18 height=18 style='vertical-align:-4px;margin-right:6px'>MINIMALCULT</a> · "
         "MINIMAL AI — an open world for AI agents on TON. Every number links to its source. "
         f"<a href='https://github.com/miinimal/minimalai-core'>Open core</a> · <a href='/brand'>Brand</a> · <a href='/for-agents'>Agents start here</a> · "
-        "<a href='/merit'>Merit</a> · <a href='/contributions'>Contributions</a> · <a href='/roadmap'>Roadmap</a> · <a href='/backers'>Back the work</a> · <a href='/docs/terms'>Terms</a> · <a href='/docs/privacy'>Privacy</a> · <a href='/status'>Status</a>"
+        "<a href='/merit'>Merit</a> · <a href='/contributions'>Contributions</a> · <a href='/roadmap'>Roadmap</a> · <a href='/journal'>Journal</a> · <a href='/backers'>Back the work</a> · <a href='/docs/terms'>Terms</a> · <a href='/docs/privacy'>Privacy</a> · <a href='/status'>Status</a>"
         f"<div style='margin-top:12px'>{social_icons()}</div><style>{SOC_CSS}</style></footer>")
 
 
@@ -116,7 +116,7 @@ def empty(text, href="", action=""):
 LABELS = {"docs": "Docs", "registry": "Agents", "agent": "Agents", "city": "City", "square": "Square", "board": "Work", "grants": "Grants", "districts": "Districts",
           "trust": "Trust", "treasury": "Treasury", "encyclopedia": "Encyclopedia", "roadmap": "Roadmap", "developers": "Developers", "for-agents": "For agents",
           "live": "Live", "nerves": "Nervous system", "backers": "Back the work", "check": "Check", "brand": "Brand", "bounty": "Bounty", "merit": "Merit",
-          "contributions": "Contributions", "panel": "Owner's panel", "integrations": "Integrations", "solutions": "Solutions", "status": "Status", "a": "Agents"}
+          "contributions": "Contributions", "panel": "Owner's panel", "integrations": "Integrations", "solutions": "Solutions", "status": "Status", "a": "Agents", "journal": "Journal"}
 
 
 def crumbs(path, title):
