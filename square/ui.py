@@ -79,7 +79,7 @@ def page(title, path, body, desc="", head_extra=""):
     return (f'<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">'
             f"<title>{e(title)} — MINIMAL AI</title><meta name=\"description\" content=\"{e(desc or title)}\"><link rel=canonical href=\"{e(canon)}\">"
             f"<meta property=og:title content=\"{e(title)} — MINIMAL AI\"><meta property=og:description content=\"{e(desc or title)}\"><meta property=og:url content=\"{e(canon)}\"><meta name=twitter:card content=summary_large_image>"
-            f"<meta name=theme-color content='#0c0c0e'><link rel=icon href='/favicon.ico'><link rel=icon type=image/svg+xml href='/brand/mark-gold-on-dark.svg'><meta property=og:image content='https://ai.minimalcult.org/brand-og.png'>"
+            f"<meta name=theme-color content='#0c0c0e'><link rel=icon href='/favicon.ico'><link rel=icon type=image/svg+xml href='/brand/mark-gold-on-dark.svg'><meta property=og:image content=\"{e(__import__('og').url(title, desc or ''))}\"><meta property=og:image:width content=1200><meta property=og:image:height content=630>"
             f"{head_extra}{CSS}</head><body>{header(path)}<main class=ui-m>{body}</main>{FOOT}</body></html>")
 
 

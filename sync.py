@@ -24,6 +24,7 @@ MANIFEST = [
     ("docs/protocol/VERIFY.md", "spec/VERIFY.md"),
     ("docs/NERVES.md", "docs/NERVES.md"),
     ("docs/CONTRIB.md", "docs/CONTRIB.md"),
+    ("docs/MAP.md", "docs/MAP.md"),
     ("gateway/nerves.py", "organs/nerves.py"),
     ("gateway/verify.py", "receipts/verdicts.py"),
     ("gateway/anchors.py", "receipts/anchors.py"),
