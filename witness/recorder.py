@@ -626,7 +626,17 @@ def _record_att(c, obj, kind, version, env, ts, source, att_id):
     return seq
 
 
-def drain_attestations(c, now, main_db=None, limit=5000):
+def _sync_witness_lists(main_db=None):
+    """C2SP witness: new logs from the witness-network.org list(s), at most hourly (a configured log is never changed)."""
+    import c2sp_witness as CW
+    m = _main(main_db)
+    try:
+        return CW.sync_lists(m, lambda u: fetch(u, guard=True, timeout=20, headers={"Accept": "text/plain"}))
+    finally:
+        m.close()
+
+
+def drain_attestations(c, now, main_db=None, limit=20000):
     """Writers' attestations accepted by the gateway (status received) become observations of this record, so the next seal
     and its anchors cover them. Quarantined ones older than 7 days are dropped (rejected)."""
     m = _main(main_db)
@@ -646,36 +656,75 @@ def drain_attestations(c, now, main_db=None, limit=5000):
     return {"recorded": n}
 
 
+def _read_head(lg, get, now):
+    """-> (payload as recorded, verified head, tree id or None, payload_type, check name), or None when nothing is published yet."""
+    import attest_formats as AF
+    fmt = lg["format"]
+    if fmt == "observatory_head":   # one file per UTC day; before today's appears, yesterday's is the latest
+        for day in (now, now - 86400):
+            st, _h, body = get(lg["head_url"].format(date=time.strftime("%Y-%m-%d", time.gmtime(day))))
+            if st == 200:
+                text = body.decode("utf-8")
+                return text, AF.verify_observatory_head(text, lg["key"]), None, "signed_head", "observatory_head"
+            if st != 404:
+                raise RuntimeError(f"head {st}")
+        return None
+    url = lg["head_url"].format(since=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now - 3600)))
+    st, _h, body = get(url, lg["headers"]) if lg.get("headers") else get(url)
+    if st != 200:
+        raise RuntimeError(f"head {st}")
+    if fmt == "rekor_v1":
+        d = json.loads(body)
+        return d["signedTreeHead"], AF.verify_note(d["signedTreeHead"], lg["key"]), str(d.get("treeID") or ""), "checkpoint", "signed_note"
+    if fmt == "note":
+        text = body.decode("utf-8")
+        return text, AF.verify_note(text, lg["key"]), None, "checkpoint", "signed_note"
+    if fmt == "plumbline_json":
+        d = json.loads(body)
+        return d, AF.verify_plumbline_head(d, lg["key"]), None, "signed_head", "plumbline_head"
+    if fmt == "census_changes":     # unsigned: we hash the page as served and record the newest event id
+        d = json.loads(body)
+        ids = [int(e["id"]) for e in d.get("events") or [] if str(e.get("id", "")).isdigit()]
+        if not ids:
+            return None
+        return None, {"origin": lg["id"], "tree_size": max(ids), "root_hash": None, "key_id": None, "as_of": d.get("as_of"),
+                      "page_sha256": AF.sha256_hex(body), "url": url}, None, "sha256", "none"
+    raise RuntimeError(f"unknown format {fmt}")
+
+
 def read_logs(c, now, get=None, main_db=None, logs=None):
     """Read mode: the signed head of every configured public log, verified with its pinned key and recorded as an observation;
     consistency with the previous head is checked where the log serves proofs."""
     import att_logs
     import attest
     import attest_formats as AF
-    get = get or (lambda u: fetch(u, guard=True, timeout=20))
+    get = get or (lambda u, headers=None: fetch(u, headers=headers, guard=True, timeout=20))
     out = {}
     m = _main(main_db)
     try:
         for lg in (logs if logs is not None else att_logs.LOGS):
             try:
-                st, _h, body = get(lg["head_url"])
-                if st != 200:
-                    raise RuntimeError(f"head {st}")
-                tree_id = None
-                if lg["format"] == "rekor_v1":
-                    d = json.loads(body)
-                    note, tree_id = d["signedTreeHead"], str(d.get("treeID") or "")
-                else:
-                    note = body.decode("utf-8")
-                head = AF.verify_note(note, lg["key"])
+                last = state(c, "att_read:" + lg["id"])
+                if last and now - int(last) < lg.get("every_s", 3600) - 300:
+                    out[lg["id"]] = {"skipped": "read less often by its terms"}
+                    continue
+                rh = _read_head(lg, get, now)
+                if rh is None:
+                    out[lg["id"]] = {"skipped": "no head published for today yet"}
+                    continue
+                note, head, tree_id, ptype, check = rh
+                set_state(c, "att_read:" + lg["id"], now)
                 cons = {"status": "not_available"}
                 prev = state(c, "att_head:" + lg["id"])
                 prev = json.loads(prev) if prev else None
-                if prev and prev["origin"] == head["origin"] and prev["tree_size"] < head["tree_size"] and lg.get("proof_url") and tree_id:
+                if ptype == "sha256":   # an unsigned feed: our own hash of what it served, no tree to check
+                    prev = None
+                pfield = lg.get("proof_field", "hashes")
+                if prev and prev["origin"] == head["origin"] and prev["tree_size"] < head["tree_size"] and lg.get("proof_url") and (tree_id or "{tree_id}" not in lg["proof_url"]):
                     st2, _h2, pb = get(lg["proof_url"].format(first=prev["tree_size"], second=head["tree_size"], tree_id=tree_id))
                     proof = json.loads(pb) if st2 == 200 else None
-                    if proof is not None and AF.verify_consistency(prev["tree_size"], head["tree_size"], prev["root_hash"], head["root_hash"], proof.get("hashes") or []):
-                        cons = {"status": "verified", "from_tree_size": prev["tree_size"], "from_root_hash": prev["root_hash"], "proof": proof.get("hashes") or []}
+                    if proof is not None and AF.verify_consistency(prev["tree_size"], head["tree_size"], prev["root_hash"], head["root_hash"], proof.get(pfield) or []):
+                        cons = {"status": "verified", "from_tree_size": prev["tree_size"], "from_root_hash": prev["root_hash"], "proof": proof.get(pfield) or []}
                     elif proof is not None:
                         # a private notice first, with a right of reply; nothing about it enters the public record now
                         cons = {"status": "diverged", "proof": proof}
@@ -697,16 +746,20 @@ def read_logs(c, now, get=None, main_db=None, logs=None):
                     continue
                 aid = f"att_obs_{hashlib.sha256((lg['id'] + head['origin'] + str(head['tree_size'])).encode()).hexdigest()[:16]}"
                 env = {"v": 1, "type": "attestation", "id": aid, "record_type": "observation", "writer": "minimalcult", "writer_identity": "minimalcult.org",
-                       "subject": head["origin"], "payload_type": "checkpoint", "payload_sha256": AF.sha256_hex(note.encode("utf-8")), "payload": note,
-                       "verified": {"check": "signed_note", "origin": head["origin"], "tree_size": head["tree_size"], "root_hash": head["root_hash"],
-                                    "log_key": lg["key"], "log_key_id": head["key_id"], "log_key_source": "pinned (att_logs.py)"},
+                       "subject": head["origin"], "payload_type": ptype, "payload_sha256": head.get("page_sha256") or AF.sha256_hex(note if isinstance(note, bytes) else
+                                                                                                                     (note.encode("utf-8") if isinstance(note, str) else AF.canon(note))),
+                       "payload": note if ptype != "sha256" else None,
+                       "verified": ({"check": check, "origin": head["origin"], "tree_size": head["tree_size"], "root_hash": head["root_hash"],
+                                     "log_key": lg["key"], "log_key_id": head["key_id"], "log_key_source": "pinned (att_logs.py)"} if ptype != "sha256" else
+                                    {"check": "none", "note": "unsigned feed: MINIMALCULT's own sha256 of the page it read", "feed_as_of": head.get("as_of"),
+                                     "feed_max_id": head["tree_size"], "url": head.get("url")}),
                        "consistency": cons, "log": lg["id"], "fields": None, "received_at": iso(now)}
                 obj = attest.subject_key(lg["id"])
-                seq = _record_att(c, obj, "checkpoint", str(head["tree_size"]), env, now, "minimalcult.org", aid)
+                seq = _record_att(c, obj, ptype, str(head["tree_size"]), env, now, "minimalcult.org", aid)
                 c.commit()
                 m.execute("INSERT OR IGNORE INTO attestations(id, created, writer, client_operation_id, subject, payload_type, payload_sha256, status, envelope, "
                           "w_object, w_version, w_seq) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
-                          (aid, now, "minimalcult", None, head["origin"], "checkpoint", env["payload_sha256"], "recorded", json.dumps(env, sort_keys=True), obj,
+                          (aid, now, "minimalcult", None, head["origin"], ptype, env["payload_sha256"], "recorded", json.dumps(env, sort_keys=True), obj,
                            str(head["tree_size"]), seq))
                 m.commit()
                 set_state(c, "att_head:" + lg["id"], json.dumps({"origin": head["origin"], "tree_size": head["tree_size"], "root_hash": head["root_hash"]}))
@@ -832,6 +885,7 @@ def run_once(c, now=None, budget=None, get=None, post=None, adapters=None, upgra
                      ("packages", lambda: crawl_packages(c, now, deadline, get)),
                      ("remotes", lambda: probe_remotes(c, now, deadline, post)),
                      ("logs", lambda: read_logs(c, now, get=logs_get, main_db=main_db) if (logs_get or get is None) else {"skipped": "sources injected"}),
+                     ("witness_lists", lambda: _sync_witness_lists(main_db) if get is None else {"skipped": "sources injected"}),
                      ("attestations", lambda: drain_attestations(c, int(time.time()), main_db))):
         try:
             summary[name] = fn()

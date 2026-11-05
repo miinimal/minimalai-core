@@ -34,3 +34,39 @@ LOGS = [
         "terms": "public checksum database; one request per hour",
     },
 ]
+
+# Recipients of the anchoring offer (block DEMO). Formats, keys and terms read in full on 2026-11-04:
+# docs/research/READ_MODE_LOGS_2026-11-04.md. AxioRank is not read: its robots.txt disallows /api/ and its terms forbid
+# use for a competing product; its tools log publishes no head. Plumbline is not read: HQ decision 2026-11-04 — never named
+# publicly, and an observation in the public record would name it (docs/hq/2026-11-04_answer_read_mode.md).
+LOGS += [
+    {
+        "id": "histor.modelmarket.dev",
+        "name": "HISTOR",
+        "format": "note",       # C2SP checkpoint; consistency proofs served as {"first", "second", "proof": [hex]}
+        "head_url": "https://histor.modelmarket.dev/checkpoint",
+        "proof_url": "https://histor.modelmarket.dev/api/v1/log/proof/consistency?first={first}&second={second}",
+        "proof_field": "proof",
+        # source: GET https://histor.modelmarket.dev/api/v1/issuer, checkpoint.vkey (2026-11-04; pinned on first contact per its spec)
+        "key": "histor.modelmarket.dev/log+ad3ca066+AfXpkWqXVW93sChXnhKsNzvGLTFAAredl1jLlEjbr4wU",
+        "terms": "public unauthenticated API; data CC BY 4.0 with attribution HISTOR (histor.modelmarket.dev); clear User-Agent",
+    },
+    {
+        "id": "github.com/yassinht/mcp-transparency-log",
+        "name": "mcp-transparency-log",
+        "format": "observatory_head",   # one signed head per UTC day; no proof API (leaves published, not read here)
+        "head_url": "https://raw.githubusercontent.com/yassinht/mcp-transparency-log/main/heads/{date}.txt",
+        "every_s": 6 * 3600,
+        # source: heads/key.pub in the repository and its README (2026-11-04)
+        "key": "4DNVWgqiY5HKiGH3PFcKt5O+fn9EmdoTNvj4aYbwQ4E=",
+        "terms": "no licence published; head changes once a day; read four times a day",
+    },
+    {
+        "id": "api.mcpcensus.com",
+        "name": "MCP Census",
+        "format": "census_changes",     # unsigned feed: our own sha256 of the page and its newest event id; payloads not kept
+        "head_url": "https://api.mcpcensus.com/v1/changes?since={since}&limit=200",
+        "headers": {"X-Census-Client": "minimalcult-record"},
+        "terms": "automated access within published limits with a clear User-Agent and X-Census-Client; no resale of raw data",
+    },
+]

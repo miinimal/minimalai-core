@@ -44,6 +44,8 @@ MANIFEST = [
     ("gateway/attest.py", "api/attestations.py"),
     ("gateway/attest_formats.py", "api/attest_formats.py"),
     ("gateway/att_logs.py", "api/att_logs.py"),
+    ("gateway/c2sp_witness.py", "api/c2sp_witness.py"),
+    ("gateway/demo_logs.py", "api/demo_logs.py"),
     ("docs/protocol/ATTESTATIONS.md", "spec/ATTESTATIONS.md"),
     ("docs/protocol/CHECKS.md", "spec/CHECKS.md"),
     ("gateway/trust.py", "receipts/trust_index.py"),

@@ -347,3 +347,47 @@ def verify_sigstore_bundle(bundle_json, artifact_sha256_hex, identity, issuer):
     except Exception as e:
         raise FormatError("signature_invalid", f"Sigstore verification failed: {str(e)[:160]}") from None
     return {"identity": identity, "issuer": issuer}
+
+
+# ---------------------------------------------------------------- project-specific signed heads (read mode only)
+def verify_observatory_head(text, key_b64):
+    """mcp-transparency-log daily head: 'mcp-observatory/v1', 'size N', 'root <base64>', 'time <RFC 3339>', 'sig <base64>';
+    Ed25519 over the first four lines, each ending in LF (internal/mlog/head.go of github.com/yassinht/mcp-transparency-log)."""
+    from cryptography.exceptions import InvalidSignature
+    from cryptography.hazmat.primitives.asymmetric import ed25519
+    if isinstance(text, bytes):
+        text = text.decode("utf-8")
+    lines = text.split("\n")
+    try:
+        origin, size_l, root_l, time_l, sig_l = lines[:5]
+        assert size_l.startswith("size ") and root_l.startswith("root ") and time_l.startswith("time ") and sig_l.startswith("sig ")
+        size, root, sig = int(size_l[5:]), b64d(root_l[5:]), b64d(sig_l[4:].strip())
+    except Exception:
+        raise FormatError("head_malformed", "expected origin, size, root, time and sig lines") from None
+    if len(root) != 32:
+        raise FormatError("head_malformed", "root must be 32 bytes")
+    key = b64d(key_b64)
+    try:
+        ed25519.Ed25519PublicKey.from_public_bytes(key).verify(sig, "\n".join(lines[:4]).encode() + b"\n")
+    except (InvalidSignature, ValueError):
+        raise FormatError("signature_invalid", "the head signature does not verify with the log key") from None
+    return {"origin": origin, "tree_size": size, "root_hash": root.hex(), "timestamp": time_l[5:], "key_id": "ed25519:" + key.hex()}
+
+
+def verify_plumbline_head(obj, key_hex):
+    """Plumbline checkpoint.json: Ed25519 over 'plumbline-checkpoint-v1\\ntree_size=N\\nroot_hash=<hex>\\ntimestamp=<unix>\\n'
+    (internal/log/checkpoint.go of github.com/GautamTalksDev/Plumbline)."""
+    from cryptography.exceptions import InvalidSignature
+    from cryptography.hazmat.primitives.asymmetric import ed25519
+    try:
+        size, root, ts = int(obj["tree_size"]), str(obj["root_hash"]).lower(), int(obj["timestamp"])
+        sig = b64d(obj["signature"])
+        assert len(bytes.fromhex(root)) == 32
+    except Exception:
+        raise FormatError("head_malformed", "expected tree_size, root_hash (hex), timestamp and signature") from None
+    msg = f"plumbline-checkpoint-v1\ntree_size={size}\nroot_hash={root}\ntimestamp={ts}\n".encode()
+    try:
+        ed25519.Ed25519PublicKey.from_public_bytes(bytes.fromhex(key_hex)).verify(sig, msg)
+    except (InvalidSignature, ValueError):
+        raise FormatError("signature_invalid", "the checkpoint signature does not verify with the log key") from None
+    return {"origin": "plumbline", "tree_size": size, "root_hash": root, "timestamp": ts, "key_id": "ed25519:" + key_hex}

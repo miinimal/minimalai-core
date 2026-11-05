@@ -160,6 +160,38 @@ def raw_sign_pq(message):
     return _pq_local().sign(bytes(message))
 
 
+WITNESS_KEY_PATH = os.environ.get("WITNESS_COSIGN_KEY_PATH", os.path.join(os.path.dirname(KEY_PATH) or ".", "witness_cosign_ed25519.key"))
+_w_pub = None
+
+
+def _w_local():
+    """Tests and development only: in production the C2SP witness key lives in the signer (no network)."""
+    if not os.path.exists(WITNESS_KEY_PATH):
+        with open(WITNESS_KEY_PATH, "wb") as f:
+            f.write(os.urandom(32))
+        os.chmod(WITNESS_KEY_PATH, 0o600)
+    return Ed25519PrivateKey.from_private_bytes(open(WITNESS_KEY_PATH, "rb").read())
+
+
+def witness_public_key_hex():
+    """Hex of the C2SP witness cosigning key (Ed25519), or "" when the signer runs without one."""
+    global _w_pub
+    if _w_pub is None:
+        if SIGNER_SOCKET:
+            _w_pub = _signer_call({"op": "pub"}).get("pub_witness") or ""
+        else:
+            _w_pub = _w_local().public_key().public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw).hex()
+    return _w_pub
+
+
+def raw_sign_witness(message):
+    if not bytes(message).startswith(b"cosignature/v1\n"):
+        raise ValueError("the witness key signs cosignature/v1 messages only")
+    if SIGNER_SOCKET:
+        return base64.b64decode(_signer_call({"op": "sign_witness", "msg": base64.b64encode(bytes(message)).decode()})["sig"])
+    return _w_local().sign(bytes(message))
+
+
 def _seal(payload):
     """Hybrid signature of a record payload (W0 construction above); Ed25519 only when no ML-DSA key is available."""
     payload = {k: v for k, v in payload.items() if k not in ("sig", "pq", "pq_key")}

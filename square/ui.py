@@ -228,7 +228,7 @@ def install(app):
         if (host in SKIP_HOSTS and request.method in ("GET", "HEAD") and resp.headers.get("content-type", "").startswith("text/html")
                 and p not in COMPANY_PATHS and not p.startswith("/blog") and resp.status_code < 400):
             return RedirectResponse("https://" + PRODUCT_HOST + p + q, 301)              # product pages live on the product host
-        if request.method != "GET" or p.startswith(("/v1/", "/admin", "/.well-known")):
+        if request.method != "GET" or p.startswith(("/v1/", "/admin", "/.well-known", "/record/logs/", "/tlog-witness/")):   # DEMO and the witness: own markup
             return resp
         ctype = resp.headers.get("content-type", "")
         human404 = next((v for k, v in HUMAN_404.items() if p.startswith(k)), None)

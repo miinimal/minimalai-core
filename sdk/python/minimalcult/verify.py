@@ -104,6 +104,12 @@ def check_attestation(doc, key_hex, pq_key_hex=None):
         if env.get("payload_type") in ("checkpoint", "rfc9162_checkpoint") and env.get("payload") and ver.get("log_key"):
             r = F.verify_note(env["payload"], ver["log_key"])
             pay = {"checked": True, "ok": r["tree_size"] == ver.get("tree_size") and r["root_hash"] == ver.get("root_hash"), "log_key_id": r["key_id"]}
+        elif ver.get("check") == "observatory_head" and env.get("payload") and ver.get("log_key"):
+            r = F.verify_observatory_head(env["payload"], ver["log_key"])
+            pay = {"checked": True, "ok": r["tree_size"] == ver.get("tree_size") and r["root_hash"] == ver.get("root_hash"), "log_key_id": r["key_id"]}
+        elif ver.get("check") == "plumbline_head" and env.get("payload") and ver.get("log_key"):
+            r = F.verify_plumbline_head(env["payload"], ver["log_key"])
+            pay = {"checked": True, "ok": r["tree_size"] == ver.get("tree_size") and r["root_hash"] == ver.get("root_hash"), "log_key_id": r["key_id"]}
         elif env.get("payload_type") == "rfc6962_sth" and env.get("payload") and ver.get("log_key"):
             r = F.verify_sth(env["payload"], ver["log_key"])
             pay = {"checked": True, "ok": r["root_hash"] == ver.get("root_hash") and r["tree_size"] == ver.get("tree_size"), "log_key_id": r["key_id"]}
