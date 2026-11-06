@@ -230,6 +230,8 @@ def install(app):
             return RedirectResponse("https://" + PRODUCT_HOST + p + q, 301)              # product pages live on the product host
         if request.method != "GET" or p.startswith(("/v1/", "/admin", "/.well-known", "/record/logs/", "/tlog-witness/")):   # DEMO and the witness: own markup
             return resp
+        if resp.status_code == 410:      # OLD-2: retired sections answer with their own plain page, not the old shell
+            return resp
         ctype = resp.headers.get("content-type", "")
         human404 = next((v for k, v in HUMAN_404.items() if p.startswith(k)), None)
         if not ctype.startswith("text/html") and not (resp.status_code == 404 and human404):

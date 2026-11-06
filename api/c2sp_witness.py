@@ -285,7 +285,7 @@ what we cosigned (failed proof, different root at a cosigned size, size-0 checkp
 429 more than twice the log's declared qpd in a UTC day.
 A conflicting checkpoint with a valid log signature is kept as evidence and reported privately to the log operator first.
 
-Status: staging. Contact: security@minimalcult.org, https://github.com/minimalcult
+Status: staging. Contact: https://github.com/minimalcult (a mailbox on minimalcult.org follows)
 """
 
 
